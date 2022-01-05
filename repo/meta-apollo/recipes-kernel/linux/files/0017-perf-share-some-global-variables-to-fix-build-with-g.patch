@@ -1,0 +1,26 @@
+From efd412cf736854acca66276ad5e57e33d27cd5b2 Mon Sep 17 00:00:00 2001
+From: Jan Kaisrlik <jan.kaisrlik@avast.com>
+Date: Fri, 28 Aug 2020 22:37:50 +0200
+Subject: [PATCH] perf: share some global variables to fix build with gcc10
+
+Signed-off-by: Jan Kaisrlik <jan.kaisrlik@avast.com>
+---
+ tools/perf/util/cs-etm.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/tools/perf/util/cs-etm.h b/tools/perf/util/cs-etm.h
+index bc848fd..a19f825 100644
+--- a/tools/perf/util/cs-etm.h
++++ b/tools/perf/util/cs-etm.h
+@@ -114,7 +114,7 @@ enum cs_etm_isa {
+ };
+ 
+ /* RB tree for quick conversion between traceID and metadata pointers */
+-struct intlist *traceid_list;
++extern struct intlist *traceid_list;
+ 
+ struct cs_etm_queue;
+ 
+-- 
+2.6.5
+

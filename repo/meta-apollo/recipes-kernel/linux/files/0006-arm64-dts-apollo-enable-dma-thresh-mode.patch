@@ -1,0 +1,36 @@
+From d64a8d9e0304f8344c4b27ae04ed63f879bfe4e1 Mon Sep 17 00:00:00 2001
+From: Jan Kaisrlik <jan.kaisrlik@avast.com>
+Date: Tue, 6 Aug 2019 13:24:16 +0200
+Subject: [PATCH 06/14] arm64: dts: apollo: enable dma thresh mode
+
+Thresh mode on the stmmac prevent network driver from overflowing theirs
+internal buffer and dropping throughtput of the network. Our
+meassurement confirm that the througput is 1.5x bigger than
+store-and-forward mode provides.
+
+Thresh mode could deliver information about corrupted frame late than
+store-and-forward mode.
+
+Signed-off-by: Jan Kaisrlik <jan.kaisrlik@avast.com>
+---
+ arch/arm64/boot/dts/amlogic/meson-axg-apollo.dts | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/amlogic/meson-axg-apollo.dts b/arch/arm64/boot/dts/amlogic/meson-axg-apollo.dts
+index fe81047fbcd2..1a85af0bc0c7 100644
+--- a/arch/arm64/boot/dts/amlogic/meson-axg-apollo.dts
++++ b/arch/arm64/boot/dts/amlogic/meson-axg-apollo.dts
+@@ -88,6 +88,10 @@
+ 	pinctrl-names = "default";
+ 	phy-handle = <&eth_phy0>;
+ 	phy-mode = "rgmii";
++	snps,force_thresh_dma_mode = "1";
++	snps,pbl = "32"; // default value is 8
++	rx-fifo-depth = <4096>; // max hw value
++	tx-fifo-depth = <2048>; // max hw value
+ 
+ 	mdio {
+ 		compatible = "snps,dwmac-mdio";
+-- 
+2.30.2
+

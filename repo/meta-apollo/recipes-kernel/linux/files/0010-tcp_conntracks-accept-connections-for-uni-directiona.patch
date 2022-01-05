@@ -1,0 +1,40 @@
+From e84c222168d489d49f71725464831e11c876b057 Mon Sep 17 00:00:00 2001
+From: Jan Kaisrlik <jan.kaisrlik@avast.com>
+Date: Tue, 10 Sep 2019 11:25:24 +0200
+Subject: [PATCH 10/14] tcp_conntracks: accept connections for uni-directional
+
+flows
+
+With uni-directional flows, accept connections for which we will never
+see ACK packets..
+
+Signed-off-by: Jan Kaisrlik <jan.kaisrlik@avast.com>
+---
+ net/netfilter/nf_conntrack_proto_tcp.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/net/netfilter/nf_conntrack_proto_tcp.c b/net/netfilter/nf_conntrack_proto_tcp.c
+index 1926fd56df56..38b015d26e0b 100644
+--- a/net/netfilter/nf_conntrack_proto_tcp.c
++++ b/net/netfilter/nf_conntrack_proto_tcp.c
+@@ -191,7 +191,7 @@ static const u8 tcp_conntracks[2][6][TCP_CONNTRACK_MAX] = {
+  *	sCL -> sCL
+  */
+ /* 	     sNO, sSS, sSR, sES, sFW, sCW, sLA, sTW, sCL, sS2	*/
+-/*ack*/	   { sES, sIV, sES, sES, sCW, sCW, sTW, sTW, sCL, sIV },
++/*ack*/	   { sES, sES, sES, sES, sCW, sCW, sTW, sTW, sCL, sIV },
+ /*
+  *	sNO -> sES	Assumed.
+  *	sSS -> sIV	ACK is invalid: we haven't seen a SYN/ACK yet.
+@@ -206,7 +206,7 @@ static const u8 tcp_conntracks[2][6][TCP_CONNTRACK_MAX] = {
+  */
+ /* 	     sNO, sSS, sSR, sES, sFW, sCW, sLA, sTW, sCL, sS2	*/
+ /*rst*/    { sIV, sCL, sCL, sCL, sCL, sCL, sCL, sCL, sCL, sCL },
+-/*none*/   { sIV, sIV, sIV, sIV, sIV, sIV, sIV, sIV, sIV, sIV }
++/*none*/   { sIV, sES, sES, sES, sIV, sIV, sIV, sIV, sIV, sIV }
+ 	},
+ 	{
+ /* REPLY */
+-- 
+2.30.2
+

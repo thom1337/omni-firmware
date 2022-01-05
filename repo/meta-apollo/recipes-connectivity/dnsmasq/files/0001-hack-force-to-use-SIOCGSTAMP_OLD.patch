@@ -1,0 +1,27 @@
+From 912607f6d676e93c84951cc09cb71da03bc7e6e4 Mon Sep 17 00:00:00 2001
+From: Jan Kaisrlik <jan.kaisrlik@avast.com>
+Date: Tue, 6 Aug 2019 13:06:11 +0000
+Subject: [PATCH] hack: force to use SIOCGSTAMP_OLD
+
+In kernel 5.2 community replace existing SIOCGSTAMP by SIOCGSTAMP_{NEW,OLD}. We
+would like to stick with old version of it.
+---
+ src/dhcp.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/dhcp.c b/src/dhcp.c
+index 5a8daec..6518e43 100644
+--- a/src/dhcp.c
++++ b/src/dhcp.c
+@@ -179,7 +179,7 @@ void dhcp_packet(time_t now, int pxe_fd)
+     return;
+     
+   #if defined (HAVE_LINUX_NETWORK)
+-  if (ioctl(fd, SIOCGSTAMP, &tv) == 0)
++  if (ioctl(fd, SIOCGSTAMP_OLD, &tv) == 0)
+     recvtime = tv.tv_sec;
+ 
+   if (msg.msg_controllen >= sizeof(struct cmsghdr))
+-- 
+2.17.1
+

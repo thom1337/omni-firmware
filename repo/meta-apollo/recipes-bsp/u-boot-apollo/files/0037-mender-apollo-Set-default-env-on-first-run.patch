@@ -1,0 +1,27 @@
+From fe47d26583ce0d0bb67c0abb6e3f1e9f1cb5a55e Mon Sep 17 00:00:00 2001
+From: Carlo Caione <ccaione@baylibre.com>
+Date: Mon, 19 Nov 2018 12:01:48 +0000
+Subject: [PATCH 37/55] mender: apollo: Set default env on first run
+
+If the canary is dead (or missing).
+
+Signed-off-by: Carlo Caione <ccaione@baylibre.com>
+---
+ include/env_mender.h | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/include/env_mender.h b/include/env_mender.h
+index 644e0dcdf3..424e783b0a 100644
+--- a/include/env_mender.h
++++ b/include/env_mender.h
+@@ -75,6 +75,7 @@
+                                                                         \
+     "mender_setup="                                                     \
+     "if test \"${mender_saveenv_canary}\" != \"1\"; then "              \
++    "env default -a; "                                                  \
+     "setenv mender_saveenv_canary 1; "                                  \
+     "saveenv; "                                                         \
+     "fi; "                                                              \
+-- 
+2.19.1
+

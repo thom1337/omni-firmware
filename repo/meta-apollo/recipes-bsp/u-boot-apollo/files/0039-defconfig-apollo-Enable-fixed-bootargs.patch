@@ -1,0 +1,29 @@
+From ae5c64c302cca9f3586a05dc9287746b6abb2dbd Mon Sep 17 00:00:00 2001
+From: Carlo Caione <ccaione@baylibre.com>
+Date: Thu, 15 Nov 2018 10:43:33 +0000
+Subject: [PATCH 39/55] defconfig: apollo: Enable fixed bootargs
+
+While the 'root=' bootargs is set by the mender script the rest of the
+bootargs are fixed for all the images. Just set them at compile time.
+
+Signed-off-by: Carlo Caione <ccaione@baylibre.com>
+---
+ configs/apollo_defconfig | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/configs/apollo_defconfig b/configs/apollo_defconfig
+index 547c52b08c..2b8ccbaba1 100644
+--- a/configs/apollo_defconfig
++++ b/configs/apollo_defconfig
+@@ -9,6 +9,8 @@ CONFIG_IDENT_STRING=" apollo"
+ CONFIG_DEBUG_UART=y
+ CONFIG_NR_DRAM_BANKS=1
+ CONFIG_OF_BOARD_SETUP=y
++CONFIG_USE_BOOTARGS=y
++CONFIG_BOOTARGS="rootwait rw console=ttyAML0"
+ CONFIG_MISC_INIT_R=y
+ # CONFIG_DISPLAY_CPUINFO is not set
+ # CONFIG_DISPLAY_BOARDINFO is not set
+-- 
+2.19.1
+

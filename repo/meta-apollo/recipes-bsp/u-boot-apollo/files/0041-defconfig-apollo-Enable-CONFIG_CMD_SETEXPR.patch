@@ -1,0 +1,25 @@
+From c1e2baf31ba197336b3b5e3ecac599bb54302e13 Mon Sep 17 00:00:00 2001
+From: Carlo Caione <ccaione@baylibre.com>
+Date: Mon, 3 Dec 2018 13:56:57 +0000
+Subject: [PATCH 41/55] defconfig: apollo: Enable CONFIG_CMD_SETEXPR
+
+Signed-off-by: Carlo Caione <ccaione@baylibre.com>
+---
+ configs/apollo_defconfig | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/configs/apollo_defconfig b/configs/apollo_defconfig
+index 2b8ccbaba1..66071fc538 100644
+--- a/configs/apollo_defconfig
++++ b/configs/apollo_defconfig
+@@ -19,7 +19,6 @@ CONFIG_MISC_INIT_R=y
+ CONFIG_CMD_GPIO=y
+ # CONFIG_CMD_LOADS is not set
+ CONFIG_CMD_MMC=y
+-# CONFIG_CMD_SETEXPR is not set
+ CONFIG_CMD_REGULATOR=y
+ CONFIG_OF_CONTROL=y
+ CONFIG_DEFAULT_DEVICE_TREE="meson-axg-apollo-evt0"
+-- 
+2.19.1
+

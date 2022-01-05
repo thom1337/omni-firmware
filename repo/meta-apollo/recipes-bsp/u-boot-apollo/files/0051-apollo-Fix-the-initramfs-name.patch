@@ -1,0 +1,28 @@
+From 1061b81b0513b890c4d6f0b5836888b8982d4cb2 Mon Sep 17 00:00:00 2001
+From: Carlo Caione <ccaione@baylibre.com>
+Date: Wed, 9 Jan 2019 14:13:26 +0000
+Subject: [PATCH 51/55] apollo: Fix the initramfs name
+
+This is preventing the overlayfs to be mounted at boot.
+
+Signed-off-by: Carlo Caione <ccaione@baylibre.com>
+---
+ include/config_mender_defines.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/include/config_mender_defines.h b/include/config_mender_defines.h
+index c3750f6e8f..3afeb04bcd 100644
+--- a/include/config_mender_defines.h
++++ b/include/config_mender_defines.h
+@@ -28,7 +28,7 @@
+ 
+ #define MENDER_BOOT_KERNEL_TYPE "booti"
+ #define MENDER_KERNEL_NAME "Image"
+-#define MENDER_RAMDISK_NAME "apollo-initramfs-image-apollo.cpio.gz"
++#define MENDER_RAMDISK_NAME "apollo-initramfs-image-meson-apollo.cpio.gz"
+ #define MENDER_DTB_NAME "meson-axg-apollo.dtb"
+ #define MENDER_UBOOT_PRE_SETUP_COMMANDS ""
+ #define MENDER_UBOOT_POST_SETUP_COMMANDS ""
+-- 
+2.19.1
+

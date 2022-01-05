@@ -1,0 +1,24 @@
+From 8a38c5dbeb565ac486e34b404811257e447606ce Mon Sep 17 00:00:00 2001
+From: Jan Kaisrlik <jan.kaisrlik@avast.com>
+Date: Mon, 11 Nov 2019 10:03:14 +0100
+Subject: [PATCH 13/14] amlogic: remove unused target
+
+---
+ arch/arm64/boot/dts/amlogic/Makefile | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/amlogic/Makefile b/arch/arm64/boot/dts/amlogic/Makefile
+index b0c9785fd046..61381fcff3c1 100644
+--- a/arch/arm64/boot/dts/amlogic/Makefile
++++ b/arch/arm64/boot/dts/amlogic/Makefile
+@@ -6,7 +6,6 @@ dtb-$(CONFIG_ARCH_MESON) += meson-g12a-x96-max.dtb
+ dtb-$(CONFIG_ARCH_MESON) += meson-g12b-a311d-khadas-vim3.dtb
+ dtb-$(CONFIG_ARCH_MESON) += meson-g12b-s922x-khadas-vim3.dtb
+ dtb-$(CONFIG_ARCH_MESON) += meson-g12b-odroid-n2.dtb
+-dtb-$(CONFIG_ARCH_MESON) += meson-axg-apollo-evt0.dtb
+ dtb-$(CONFIG_ARCH_MESON) += meson-axg-apollo.dtb
+ dtb-$(CONFIG_ARCH_MESON) += meson-gxbb-nanopi-k2.dtb
+ dtb-$(CONFIG_ARCH_MESON) += meson-gxbb-nexbox-a95x.dtb
+-- 
+2.30.2
+

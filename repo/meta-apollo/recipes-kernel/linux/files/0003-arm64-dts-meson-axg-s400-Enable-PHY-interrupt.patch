@@ -1,0 +1,30 @@
+From f4c2b3b6e58409669876eab944c92b223a6d8a09 Mon Sep 17 00:00:00 2001
+From: Carlo Caione <ccaione@baylibre.com>
+Date: Thu, 6 Dec 2018 09:35:50 +0000
+Subject: [PATCH 03/14] arm64: dts: meson-axg: s400: Enable PHY interrupt
+
+Now that the GPIO controller has been enabled also on AXG we can hook up
+the GPIO interrupt for the PHY.
+
+Tested-by: Jerome Brunet <jbrunet@baylibre.com>
+Signed-off-by: Carlo Caione <ccaione@baylibre.com>
+---
+ arch/arm64/boot/dts/amlogic/meson-axg-apollo-evt0.dts | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/amlogic/meson-axg-apollo-evt0.dts b/arch/arm64/boot/dts/amlogic/meson-axg-apollo-evt0.dts
+index 21bd12a1ee76..24be4a8b69b5 100644
+--- a/arch/arm64/boot/dts/amlogic/meson-axg-apollo-evt0.dts
++++ b/arch/arm64/boot/dts/amlogic/meson-axg-apollo-evt0.dts
+@@ -96,6 +96,8 @@
+ 			/* Realtek RTL8211F (0x001cc916) */
+ 			reg = <0>;
+ 			eee-broken-1000t;
++			interrupt-parent = <&gpio_intc>;
++			interrupts = <98 IRQ_TYPE_LEVEL_LOW>;
+ 		};
+ 	};
+ };
+-- 
+2.30.2
+

@@ -1,0 +1,29 @@
+From 29a43b17e4a12bfb96775ceb3e9205ae583fdabd Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Licek=20Tom=C3=A1=C5=A1?= <licek@avast.com>
+Date: Tue, 4 Feb 2020 10:22:11 +0100
+Subject: [PATCH] Fix for double closed FD:
+ https://github.com/boostorg/process/issues/105
+
+Upstream-status: merged in 1.74.0
+
+---
+ boost/process/detail/posix/async_pipe.hpp | 6 ++----
+ 1 file changed, 2 insertions(+), 4 deletions(-)
+
+diff --git a/boost/process/detail/posix/async_pipe.hpp b/boost/process/detail/posix/async_pipe.hpp
+index a82c057b9..1766ce2f9 100644
+--- a/boost/process/detail/posix/async_pipe.hpp
++++ b/boost/process/detail/posix/async_pipe.hpp
+@@ -71,10 +71,8 @@ class async_pipe
+ 
+     ~async_pipe()
+     {
+-        if (_sink .native_handle()  != -1)
+-            ::close(_sink.native_handle());
+-        if (_source.native_handle() != -1)
+-            ::close(_source.native_handle());
++        boost::system::error_code ec;
++        close(ec);
+     }
+ 
+     template<class CharT, class Traits = std::char_traits<CharT>>

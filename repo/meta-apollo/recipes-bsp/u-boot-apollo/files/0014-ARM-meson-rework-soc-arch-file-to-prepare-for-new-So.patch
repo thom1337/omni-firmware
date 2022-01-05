@@ -1,0 +1,449 @@
+From 28c2d6a29e36fcaa71f67ffe7f5b66f5e33cf0f1 Mon Sep 17 00:00:00 2001
+From: Jerome Brunet <jbrunet@baylibre.com>
+Date: Fri, 5 Oct 2018 17:00:37 +0200
+Subject: [PATCH 14/55] ARM: meson: rework soc arch file to prepare for new SoC
+
+We are about to AXG SoC. While very close to the Gx SoC family,
+we will need to handle a few thing which are different in this
+SoC. Rework the meson arch directory to prepare for this
+
+Signed-off-by: Jerome Brunet <jbrunet@baylibre.com>
+---
+ .../asm/arch-meson/{clock.h => clock-gx.h}    |   4 +-
+ arch/arm/include/asm/arch-meson/eth.h         |   6 +-
+ arch/arm/include/asm/arch-meson/mem.h         |   3 +-
+ arch/arm/mach-meson/Kconfig                   |   4 +-
+ arch/arm/mach-meson/Makefile                  |   3 +-
+ arch/arm/mach-meson/board-common.c            |  56 +++++++++
+ arch/arm/mach-meson/{board.c => board-gx.c}   | 106 +++++++++---------
+ arch/arm/mach-meson/eth.c                     |  53 ---------
+ board/amlogic/odroid-c2/odroid-c2.c           |   6 +-
+ board/amlogic/p212/p212.c                     |   6 +-
+ drivers/clk/clk_meson.c                       |   2 +-
+ 11 files changed, 128 insertions(+), 121 deletions(-)
+ rename arch/arm/include/asm/arch-meson/{clock.h => clock-gx.h} (98%)
+ create mode 100644 arch/arm/mach-meson/board-common.c
+ rename arch/arm/mach-meson/{board.c => board-gx.c} (61%)
+ delete mode 100644 arch/arm/mach-meson/eth.c
+
+diff --git a/arch/arm/include/asm/arch-meson/clock.h b/arch/arm/include/asm/arch-meson/clock-gx.h
+similarity index 98%
+rename from arch/arm/include/asm/arch-meson/clock.h
+rename to arch/arm/include/asm/arch-meson/clock-gx.h
+index c0ff00fc9a..13a2e7688f 100644
+--- a/arch/arm/include/asm/arch-meson/clock.h
++++ b/arch/arm/include/asm/arch-meson/clock-gx.h
+@@ -3,8 +3,8 @@
+  * Copyright 2016 - AmLogic, Inc.
+  * Copyright 2018 - Beniamino Galvani <b.galvani@gmail.com>
+  */
+-#ifndef _ARCH_MESON_CLOCK_H_
+-#define _ARCH_MESON_CLOCK_H_
++#ifndef _ARCH_MESON_CLOCK_GX_H_
++#define _ARCH_MESON_CLOCK_GX_H_
+ 
+ /*
+  * Clock controller register offsets
+diff --git a/arch/arm/include/asm/arch-meson/eth.h b/arch/arm/include/asm/arch-meson/eth.h
+index 1aa0872d53..08acc5cbf7 100644
+--- a/arch/arm/include/asm/arch-meson/eth.h
++++ b/arch/arm/include/asm/arch-meson/eth.h
+@@ -10,13 +10,13 @@
+ #include <phy.h>
+ 
+ enum {
+-	/* Use GXL Internal RMII PHY */
+-	MESON_GXL_USE_INTERNAL_RMII_PHY = 1,
++	/* Use Internal RMII PHY */
++	MESON_USE_INTERNAL_RMII_PHY = 1,
+ };
+ 
+ /* Configure the Ethernet MAC with the requested interface mode
+  * with some optional flags.
+  */
+-void meson_gx_eth_init(phy_interface_t mode, unsigned int flags);
++void meson_eth_init(phy_interface_t mode, unsigned int flags);
+ 
+ #endif /* __MESON_ETH_H__ */
+diff --git a/arch/arm/include/asm/arch-meson/mem.h b/arch/arm/include/asm/arch-meson/mem.h
+index 62818335d9..a65100aeb7 100644
+--- a/arch/arm/include/asm/arch-meson/mem.h
++++ b/arch/arm/include/asm/arch-meson/mem.h
+@@ -10,6 +10,7 @@
+ /* Configure the reserved memory zones exported by the secure registers
+  * into EFI and DTB reserved memory entries.
+  */
+-void meson_gx_init_reserved_memory(void *fdt);
++void meson_board_add_reserved_memory(void *fdt, u64 start, u64 size);
++void meson_init_reserved_memory(void *fdt);
+ 
+ #endif /* __MESON_MEM_H__ */
+diff --git a/arch/arm/mach-meson/Kconfig b/arch/arm/mach-meson/Kconfig
+index 06c16dd2fb..52238ccfe5 100644
+--- a/arch/arm/mach-meson/Kconfig
++++ b/arch/arm/mach-meson/Kconfig
+@@ -10,11 +10,11 @@ config MESON_GX
+ 
+ config MESON_GXBB
+ 	bool
+-	select MESON64_COMMON
++	select MESON_GX
+ 
+ config MESON_GXL
+ 	bool
+-	select MESON64_COMMON
++	select MESON_GX
+ 
+ choice
+ 	prompt "Platform select"
+diff --git a/arch/arm/mach-meson/Makefile b/arch/arm/mach-meson/Makefile
+index 8ad9b3e575..78345b47f2 100644
+--- a/arch/arm/mach-meson/Makefile
++++ b/arch/arm/mach-meson/Makefile
+@@ -2,4 +2,5 @@
+ #
+ # Copyright (c) 2016 Beniamino Galvani <b.galvani@gmail.com>
+ 
+-obj-y += board.o sm.o eth.o
++obj-y += board-common.o sm.o
++obj-$(CONFIG_MESON_GX) += board-gx.o
+diff --git a/arch/arm/mach-meson/board-common.c b/arch/arm/mach-meson/board-common.c
+new file mode 100644
+index 0000000000..0446507e35
+--- /dev/null
++++ b/arch/arm/mach-meson/board-common.c
+@@ -0,0 +1,56 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * (C) Copyright 2016 Beniamino Galvani <b.galvani@gmail.com>
++ */
++
++#include <common.h>
++#include <linux/libfdt.h>
++#include <linux/err.h>
++#include <asm/arch/mem.h>
++#include <asm/arch/sm.h>
++#include <asm/armv8/mmu.h>
++#include <asm/unaligned.h>
++#include <efi_loader.h>
++
++DECLARE_GLOBAL_DATA_PTR;
++
++int dram_init(void)
++{
++	const fdt64_t *val;
++	int offset;
++	int len;
++
++	offset = fdt_path_offset(gd->fdt_blob, "/memory");
++	if (offset < 0)
++		return -EINVAL;
++
++	val = fdt_getprop(gd->fdt_blob, offset, "reg", &len);
++	if (len < sizeof(*val) * 2)
++		return -EINVAL;
++
++	/* Use unaligned access since cache is still disabled */
++	gd->ram_size = get_unaligned_be64(&val[1]);
++
++	return 0;
++}
++
++void meson_board_add_reserved_memory(void *fdt, u64 start, u64 size)
++{
++	int ret;
++
++	ret = fdt_add_mem_rsv(fdt, start, size);
++	if (ret)
++		printf("Could not reserve zone @ 0x%llx\n", start);
++
++	if (IS_ENABLED(CONFIG_EFI_LOADER)) {
++		efi_add_memory_map(start,
++				   ALIGN(size, EFI_PAGE_SIZE) >> EFI_PAGE_SHIFT,
++				   EFI_RESERVED_MEMORY_TYPE, false);
++	}
++}
++
++void reset_cpu(ulong addr)
++{
++	psci_system_reset();
++}
++
+diff --git a/arch/arm/mach-meson/board.c b/arch/arm/mach-meson/board-gx.c
+similarity index 61%
+rename from arch/arm/mach-meson/board.c
+rename to arch/arm/mach-meson/board-gx.c
+index 1ef7e5a6d1..30705fefe6 100644
+--- a/arch/arm/mach-meson/board.c
++++ b/arch/arm/mach-meson/board-gx.c
+@@ -1,64 +1,24 @@
+ // SPDX-License-Identifier: GPL-2.0+
+ /*
+  * (C) Copyright 2016 Beniamino Galvani <b.galvani@gmail.com>
++ * (C) Copyright 2018 Neil Armstrong <narmstrong@baylibre.com>
+  */
+ 
+ #include <common.h>
+-#include <linux/libfdt.h>
+-#include <linux/err.h>
++#include <asm/arch/eth.h>
+ #include <asm/arch/gx.h>
+-#include <asm/arch/sm.h>
++#include <asm/arch/mem.h>
++#include <asm/io.h>
+ #include <asm/armv8/mmu.h>
+-#include <asm/unaligned.h>
+ #include <linux/sizes.h>
+-#include <efi_loader.h>
+-#include <asm/io.h>
++#include <phy.h>
+ 
+ DECLARE_GLOBAL_DATA_PTR;
+ 
+-int dram_init(void)
+-{
+-	const fdt64_t *val;
+-	int offset;
+-	int len;
+-
+-	offset = fdt_path_offset(gd->fdt_blob, "/memory");
+-	if (offset < 0)
+-		return -EINVAL;
+-
+-	val = fdt_getprop(gd->fdt_blob, offset, "reg", &len);
+-	if (len < sizeof(*val) * 2)
+-		return -EINVAL;
+-
+-	/* Use unaligned access since cache is still disabled */
+-	gd->ram_size = get_unaligned_be64(&val[1]);
+-
+-	return 0;
+-}
+-
+-phys_size_t get_effective_memsize(void)
+-{
+-	/* Size is reported in MiB, convert it in bytes */
+-	return ((readl(GX_AO_SEC_GP_CFG0) & GX_AO_MEM_SIZE_MASK)
+-			>> GX_AO_MEM_SIZE_SHIFT) * SZ_1M;
+-}
+-
+-static void meson_board_add_reserved_memory(void *fdt, u64 start, u64 size)
+-{
+-	int ret;
+-
+-	ret = fdt_add_mem_rsv(fdt, start, size);
+-	if (ret)
+-		printf("Could not reserve zone @ 0x%llx\n", start);
+-
+-	if (IS_ENABLED(CONFIG_EFI_LOADER)) {
+-		efi_add_memory_map(start,
+-				   ALIGN(size, EFI_PAGE_SIZE) >> EFI_PAGE_SHIFT,
+-				   EFI_RESERVED_MEMORY_TYPE, false);
+-	}
+-}
+-
+-void meson_gx_init_reserved_memory(void *fdt)
++/* Configure the reserved memory zones exported by the secure registers
++ * into EFI and DTB reserved memory entries.
++ */
++void meson_init_reserved_memory(void *fdt)
+ {
+ 	u64 bl31_size, bl31_start;
+ 	u64 bl32_size, bl32_start;
+@@ -70,7 +30,6 @@ void meson_gx_init_reserved_memory(void *fdt)
+ 	 * - AO_SEC_GP_CFG5: bl31 physical start address, can be NULL
+ 	 * - AO_SEC_GP_CFG4: bl32 physical start address, can be NULL
+ 	 */
+-
+ 	reg = readl(GX_AO_SEC_GP_CFG3);
+ 
+ 	bl31_size = ((reg & GX_AO_BL31_RSVMEM_SIZE_MASK)
+@@ -102,9 +61,11 @@ void meson_gx_init_reserved_memory(void *fdt)
+ 		meson_board_add_reserved_memory(fdt, bl32_start, bl32_size);
+ }
+ 
+-void reset_cpu(ulong addr)
++phys_size_t get_effective_memsize(void)
+ {
+-	psci_system_reset();
++	/* Size is reported in MiB, convert it in bytes */
++	return ((readl(GX_AO_SEC_GP_CFG0) & GX_AO_MEM_SIZE_MASK)
++			>> GX_AO_MEM_SIZE_SHIFT) * SZ_1M;
+ }
+ 
+ static struct mm_region gx_mem_map[] = {
+@@ -128,3 +89,44 @@ static struct mm_region gx_mem_map[] = {
+ };
+ 
+ struct mm_region *mem_map = gx_mem_map;
++
++/* Configure the Ethernet MAC with the requested interface mode
++ * with some optional flags.
++ */
++void meson_eth_init(phy_interface_t mode, unsigned int flags)
++{
++	switch (mode) {
++	case PHY_INTERFACE_MODE_RGMII:
++	case PHY_INTERFACE_MODE_RGMII_ID:
++	case PHY_INTERFACE_MODE_RGMII_RXID:
++	case PHY_INTERFACE_MODE_RGMII_TXID:
++		/* Set RGMII mode */
++		setbits_le32(GX_ETH_REG_0, GX_ETH_REG_0_PHY_INTF |
++			     GX_ETH_REG_0_TX_PHASE(1) |
++			     GX_ETH_REG_0_TX_RATIO(4) |
++			     GX_ETH_REG_0_PHY_CLK_EN |
++			     GX_ETH_REG_0_CLK_EN);
++		break;
++
++	case PHY_INTERFACE_MODE_RMII:
++		/* Set RMII mode */
++		out_le32(GX_ETH_REG_0, GX_ETH_REG_0_INVERT_RMII_CLK |
++					 GX_ETH_REG_0_CLK_EN);
++
++		/* Use GXL RMII Internal PHY */
++		if (IS_ENABLED(CONFIG_MESON_GXL) &&
++		    (flags & MESON_USE_INTERNAL_RMII_PHY)) {
++			writel(0x10110181, GX_ETH_REG_2);
++			writel(0xe40908ff, GX_ETH_REG_3);
++		}
++
++		break;
++
++	default:
++		printf("Invalid Ethernet interface mode\n");
++		return;
++	}
++
++	/* Enable power gate */
++	clrbits_le32(GX_MEM_PD_REG_0, GX_MEM_PD_REG_0_ETH_MASK);
++}
+diff --git a/arch/arm/mach-meson/eth.c b/arch/arm/mach-meson/eth.c
+deleted file mode 100644
+index 8b28bc8531..0000000000
+--- a/arch/arm/mach-meson/eth.c
++++ /dev/null
+@@ -1,53 +0,0 @@
+-// SPDX-License-Identifier: GPL-2.0+
+-/*
+- * Copyright (C) 2016 BayLibre, SAS
+- * Author: Neil Armstrong <narmstrong@baylibre.com>
+- */
+-
+-#include <common.h>
+-#include <dm.h>
+-#include <asm/io.h>
+-#include <asm/arch/gx.h>
+-#include <asm/arch/eth.h>
+-#include <phy.h>
+-
+-/* Configure the Ethernet MAC with the requested interface mode
+- * with some optional flags.
+- */
+-void meson_gx_eth_init(phy_interface_t mode, unsigned int flags)
+-{
+-	switch (mode) {
+-	case PHY_INTERFACE_MODE_RGMII:
+-	case PHY_INTERFACE_MODE_RGMII_ID:
+-	case PHY_INTERFACE_MODE_RGMII_RXID:
+-	case PHY_INTERFACE_MODE_RGMII_TXID:
+-		/* Set RGMII mode */
+-		setbits_le32(GX_ETH_REG_0, GX_ETH_REG_0_PHY_INTF |
+-			     GX_ETH_REG_0_TX_PHASE(1) |
+-			     GX_ETH_REG_0_TX_RATIO(4) |
+-			     GX_ETH_REG_0_PHY_CLK_EN |
+-			     GX_ETH_REG_0_CLK_EN);
+-		break;
+-
+-	case PHY_INTERFACE_MODE_RMII:
+-		/* Set RMII mode */
+-		out_le32(GX_ETH_REG_0, GX_ETH_REG_0_INVERT_RMII_CLK |
+-					 GX_ETH_REG_0_CLK_EN);
+-
+-		/* Use GXL RMII Internal PHY */
+-		if (IS_ENABLED(CONFIG_MESON_GXL) &&
+-		    (flags & MESON_GXL_USE_INTERNAL_RMII_PHY)) {
+-			writel(0x10110181, GX_ETH_REG_2);
+-			writel(0xe40908ff, GX_ETH_REG_3);
+-		}
+-
+-		break;
+-
+-	default:
+-		printf("Invalid Ethernet interface mode\n");
+-		return;
+-	}
+-
+-	/* Enable power gate */
+-	clrbits_le32(GX_MEM_PD_REG_0, GX_MEM_PD_REG_0_ETH_MASK);
+-}
+diff --git a/board/amlogic/odroid-c2/odroid-c2.c b/board/amlogic/odroid-c2/odroid-c2.c
+index 2a2755c387..d784d6bd09 100644
+--- a/board/amlogic/odroid-c2/odroid-c2.c
++++ b/board/amlogic/odroid-c2/odroid-c2.c
+@@ -28,7 +28,7 @@ int misc_init_r(void)
+ 	char serial[EFUSE_SN_SIZE];
+ 	ssize_t len;
+ 
+-	meson_gx_eth_init(PHY_INTERFACE_MODE_RGMII, 0);
++	meson_eth_init(PHY_INTERFACE_MODE_RGMII, 0);
+ 
+ 	if (!eth_env_get_enetaddr("ethaddr", mac_addr)) {
+ 		len = meson_sm_read_efuse(EFUSE_MAC_OFFSET,
+@@ -40,7 +40,7 @@ int misc_init_r(void)
+ 	if (!env_get("serial#")) {
+ 		len = meson_sm_read_efuse(EFUSE_SN_OFFSET, serial,
+ 			EFUSE_SN_SIZE);
+-		if (len == EFUSE_SN_SIZE) 
++		if (len == EFUSE_SN_SIZE)
+ 			env_set("serial#", serial);
+ 	}
+ 
+@@ -49,7 +49,7 @@ int misc_init_r(void)
+ 
+ int ft_board_setup(void *blob, bd_t *bd)
+ {
+-	meson_gx_init_reserved_memory(blob);
++	meson_init_reserved_memory(blob);
+ 
+ 	return 0;
+ }
+diff --git a/board/amlogic/p212/p212.c b/board/amlogic/p212/p212.c
+index 00e07d77ad..33992a2279 100644
+--- a/board/amlogic/p212/p212.c
++++ b/board/amlogic/p212/p212.c
+@@ -29,8 +29,8 @@ int misc_init_r(void)
+ 	char serial[EFUSE_SN_SIZE];
+ 	ssize_t len;
+ 
+-	meson_gx_eth_init(PHY_INTERFACE_MODE_RMII,
+-			  MESON_GXL_USE_INTERNAL_RMII_PHY);
++	meson_eth_init(PHY_INTERFACE_MODE_RMII,
++		       MESON_USE_INTERNAL_RMII_PHY);
+ 
+ 	if (!eth_env_get_enetaddr("ethaddr", mac_addr)) {
+ 		len = meson_sm_read_efuse(EFUSE_MAC_OFFSET,
+@@ -51,7 +51,7 @@ int misc_init_r(void)
+ 
+ int ft_board_setup(void *blob, bd_t *bd)
+ {
+-	meson_gx_init_reserved_memory(blob);
++	meson_init_reserved_memory(blob);
+ 
+ 	return 0;
+ }
+diff --git a/drivers/clk/clk_meson.c b/drivers/clk/clk_meson.c
+index f0d4d28fd3..def3be6b91 100644
+--- a/drivers/clk/clk_meson.c
++++ b/drivers/clk/clk_meson.c
+@@ -6,7 +6,7 @@
+  */
+ 
+ #include <common.h>
+-#include <asm/arch/clock.h>
++#include <asm/arch/clock-gx.h>
+ #include <asm/io.h>
+ #include <clk-uclass.h>
+ #include <div64.h>
+-- 
+2.19.1
+

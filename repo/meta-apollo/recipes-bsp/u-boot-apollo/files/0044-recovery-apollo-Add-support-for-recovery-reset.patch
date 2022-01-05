@@ -1,0 +1,75 @@
+From ac36b1b6f797bde4467186f431879d6a14c74876 Mon Sep 17 00:00:00 2001
+From: Carlo Caione <ccaione@baylibre.com>
+Date: Mon, 26 Nov 2018 19:31:08 +0000
+Subject: [PATCH 44/55] recovery: apollo: Add support for recovery / reset
+
+Signed-off-by: Carlo Caione <ccaione@baylibre.com>
+---
+ include/config_mender_defines.h |  5 +++++
+ include/env_mender.h            | 18 ++++++++++++++++--
+ 2 files changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/include/config_mender_defines.h b/include/config_mender_defines.h
+index f728b24aac..6e2dd71416 100644
+--- a/include/config_mender_defines.h
++++ b/include/config_mender_defines.h
+@@ -1,6 +1,11 @@
+ #ifndef HEADER_CONFIG_MENDER_DEFINES_H
+ #define HEADER_CONFIG_MENDER_DEFINES_H
+ 
++/* Apollo recovery / reset */
++#define APOLLO_ROOTFS_PART_R_NUMBER 7
++#define APOLLO_ROOTFS_PART_R_NUMBER_HEX 7
++#define APOLLO_ROOTFS_PART_R_NAME "/dev/mmcblk0p7"
++
+ /* Shell variables */
+ #define MENDER_BOOT_PART_NUMBER 1
+ #define MENDER_BOOT_PART_NUMBER_HEX 1
+diff --git a/include/env_mender.h b/include/env_mender.h
+index 14d6aaf213..c10dc792ae 100644
+--- a/include/env_mender.h
++++ b/include/env_mender.h
+@@ -60,6 +60,7 @@
+     "mender_post_setup_commands=" MENDER_UBOOT_POST_SETUP_COMMANDS "\0" \
+     "mender_check_saveenv_canary=1\0" \
+     "check_reset_button=gpio input aobus-banks10; test $? -eq 0;\0" \
++    "check_watchdog=itest.w *0xff80023c -eq 0xd000; test $? -eq 0;\0" \
+     \
+     "mender_setup=" \
+     "if test \"${mender_saveenv_canary}\" != \"1\"; then " \
+@@ -73,9 +74,12 @@
+     "setenv mender_kernel_root " MENDER_STORAGE_DEVICE_BASE "${mender_boot_part}; " \
+     "if test ${mender_boot_part} = " __stringify(MENDER_ROOTFS_PART_A_NUMBER) "; then " \
+         "setenv mender_boot_part_name " MENDER_ROOTFS_PART_A_NAME "; " \
+-    "else " \
++    "else if test ${mender_boot_part} = " __stringify(MENDER_ROOTFS_PART_B_NUMBER) "; then " \
+         "setenv mender_boot_part_name " MENDER_ROOTFS_PART_B_NAME "; " \
+-    "fi; " \
++    "else " \
++        "setenv mender_boot_part_name " APOLLO_ROOTFS_PART_R_NAME "; " \
++        "setenv mender_boot_part_hex " __stringify(APOLLO_ROOTFS_PART_R_NUMBER_HEX) "; " \
++    "fi; fi; " \
+     "setenv mender_kernel_root_name ${mender_boot_part_name}; " \
+     "setenv mender_uboot_root " MENDER_UBOOT_STORAGE_INTERFACE " " __stringify(MENDER_UBOOT_STORAGE_DEVICE) ":${mender_boot_part_hex}; " \
+     "setenv mender_uboot_root_name ${mender_boot_part_name}; " \
+@@ -131,7 +135,17 @@
+     "fi; "
+ #endif
+ 
++#define APOLLO_CHECK_RECOVERY \
++    "if run check_reset_button; then " \
++        "setenv bootargs factory_reset ${bootargs}; " \
++        "setenv mender_boot_part " __stringify(APOLLO_ROOTFS_PART_R_NUMBER) "; " \
++    "else if run check_watchdog || test \"${force_hard_recovery}\" = \"1\"; then " \
++        "setenv bootargs hard_recovery ${bootargs}; " \
++        "setenv mender_boot_part " __stringify(APOLLO_ROOTFS_PART_R_NUMBER) "; " \
++    "fi; fi; "
++
+ #define CONFIG_MENDER_BOOTCOMMAND \
++    APOLLO_CHECK_RECOVERY \
+     "run mender_setup; " \
+     MENDER_BOOTARGS \
+     MENDER_LOAD_KERNEL_AND_FDT \
+-- 
+2.19.1
+

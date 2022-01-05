@@ -1,0 +1,89 @@
+From 4f098ae82cfdd1e876a4e85adeaf1fa7dbda050b Mon Sep 17 00:00:00 2001
+From: Carlo Caione <ccaione@baylibre.com>
+Date: Mon, 11 Feb 2019 13:06:52 +0000
+Subject: [PATCH 05/14] DOWNSTREAM: apollo: leds: Set initial brightness level
+
+When the `pwm-leds` driver is probed the brightness level is reduced to
+zero. We can set back again the desired brightness level acting on the
+sysfs entry when the initramfs is loaded. This is causing a glitch
+during boot where the LED is off for a brief period between the driver
+probing and the initrd setting again the correct brightness.
+
+With this downstream patch we set the desired brightness level in the
+DTS and modify the driver to take that into account during the PWM
+initialization.
+
+The brightness of the LEDs is set to B:247 R:0 G:51.
+
+Signed-off-by: Carlo Caione <ccaione@baylibre.com>
+---
+ arch/arm64/boot/dts/amlogic/meson-axg-apollo.dts | 4 +++-
+ drivers/leds/leds-pwm.c                          | 4 +++-
+ include/linux/leds_pwm.h                         | 1 +
+ 3 files changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/amlogic/meson-axg-apollo.dts b/arch/arm64/boot/dts/amlogic/meson-axg-apollo.dts
+index 76792944fd99..fe81047fbcd2 100644
+--- a/arch/arm64/boot/dts/amlogic/meson-axg-apollo.dts
++++ b/arch/arm64/boot/dts/amlogic/meson-axg-apollo.dts
+@@ -31,20 +31,22 @@
+ 		app1 {
+ 			label = "apollo:app1";
+ 			pwms = <&pwm_cd 0 7812500 0>;
++			brightness = <0>;
+ 			max-brightness = <255>;
+ 		};
+ 
+ 		app2 {
+ 			label = "apollo:app2";
+ 			pwms = <&pwm_ab 0 7812500 0>;
++			brightness = <0>;
+ 			max-brightness = <255>;
+ 		};
+ 
+ 		power {
+ 			label = "apollo:power";
+ 			pwms = <&pwm_ab 1 7812500 0>;
++			brightness = <0>;
+ 			max-brightness = <255>;
+-			linux,default-trigger = "default-on";
+ 		};
+ 	};
+ 
+diff --git a/drivers/leds/leds-pwm.c b/drivers/leds/leds-pwm.c
+index 8b6965a563e9..e2bc6b2975e3 100644
+--- a/drivers/leds/leds-pwm.c
++++ b/drivers/leds/leds-pwm.c
+@@ -75,7 +75,7 @@ static int led_pwm_add(struct device *dev, struct led_pwm_priv *priv,
+ 	led_data->active_low = led->active_low;
+ 	led_data->cdev.name = led->name;
+ 	led_data->cdev.default_trigger = led->default_trigger;
+-	led_data->cdev.brightness = LED_OFF;
++	led_data->cdev.brightness = led->brightness;
+ 	led_data->cdev.max_brightness = led->max_brightness;
+ 	led_data->cdev.flags = LED_CORE_SUSPENDRESUME;
+ 
+@@ -142,6 +142,8 @@ static int led_pwm_create_fwnode(struct device *dev, struct led_pwm_priv *priv)
+ 							   "active-low");
+ 		fwnode_property_read_u32(fwnode, "max-brightness",
+ 					 &led.max_brightness);
++		fwnode_property_read_u32(fwnode, "brightness",
++				     &led.brightness);
+ 
+ 		ret = led_pwm_add(dev, priv, &led, fwnode);
+ 		if (ret) {
+diff --git a/include/linux/leds_pwm.h b/include/linux/leds_pwm.h
+index 93d101d28943..b50c4075c64d 100644
+--- a/include/linux/leds_pwm.h
++++ b/include/linux/leds_pwm.h
+@@ -11,6 +11,7 @@ struct led_pwm {
+ 	unsigned	pwm_id __deprecated;
+ 	u8 		active_low;
+ 	unsigned 	max_brightness;
++	unsigned	brightness;
+ 	unsigned	pwm_period_ns;
+ };
+ 
+-- 
+2.30.2
+

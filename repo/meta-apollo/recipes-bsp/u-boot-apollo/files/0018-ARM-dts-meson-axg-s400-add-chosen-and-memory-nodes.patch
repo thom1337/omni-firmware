@@ -1,0 +1,32 @@
+From c03379eb5a51924c1caa1d45898df83b6c3f1680 Mon Sep 17 00:00:00 2001
+From: Neil Armstrong <narmstrong@baylibre.com>
+Date: Mon, 10 Sep 2018 16:43:19 +0200
+Subject: [PATCH 18/55] ARM: dts: meson-axg-s400: add chosen and memory nodes
+
+---
+ arch/arm/dts/meson-axg-s400.dts | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/arch/arm/dts/meson-axg-s400.dts b/arch/arm/dts/meson-axg-s400.dts
+index dff9b15eb3..767c7acc6a 100644
+--- a/arch/arm/dts/meson-axg-s400.dts
++++ b/arch/arm/dts/meson-axg-s400.dts
+@@ -16,6 +16,15 @@
+ 		serial1 = &uart_A;
+ 	};
+ 
++	chosen {
++		stdout-path = "serial0:115200n8";
++	};
++
++	memory@0 {
++		device_type = "memory";
++		reg = <0x0 0x0 0x0 0x40000000>;
++	};
++
+ 	vddio_boot: regulator-vddio_boot {
+ 		compatible = "regulator-fixed";
+ 		regulator-name = "VDDIO_BOOT";
+-- 
+2.19.1
+

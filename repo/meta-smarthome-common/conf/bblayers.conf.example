@@ -1,0 +1,28 @@
+# POKY_BBLAYERS_CONF_VERSION is increased each time build/conf/bblayers.conf
+# changes incompatibly
+POKY_BBLAYERS_CONF_VERSION = "2"
+
+BBPATH = "${TOPDIR}"
+BBFILES ?= ""
+
+LAYERS = "<path to layers>"
+
+BBLAYERS ?= " \
+  ${LAYERS}/poky/meta \
+  ${LAYERS}/poky/meta-poky \
+  ${LAYERS}/poky/meta-yocto-bsp \
+  ${LAYERS}/meta-openembedded/meta-oe \
+  ${LAYERS}/meta-openembedded/meta-networking \
+  ${LAYERS}/meta-openembedded/meta-python \
+  ${LAYERS}/meta-openembedded/meta-perl \
+  ${LAYERS}/meta-apollo \
+  ${LAYERS}/meta-gplv2 \
+  ${LAYERS}/meta-meson \
+  ${LAYERS}/meta-smarthome-common \
+  ${LAYERS}/version \
+"
+
+SSTATE_DIR ?= "/workdir/sstate/"
+DL_DIR ?= "/workdir/downloads"
+
+SSTATE_MIRRORS = "file://.* file:///workdir/sstate/PATH"

@@ -1,0 +1,38 @@
+From 0a75ab2ea9dc8524752c5c2d22f8460e4b595cf4 Mon Sep 17 00:00:00 2001
+From: Carlo Caione <ccaione@baylibre.com>
+Date: Thu, 15 Nov 2018 10:41:45 +0000
+Subject: [PATCH 38/55] defconfig: apollo: Regenerate defconfig
+
+Signed-off-by: Carlo Caione <ccaione@baylibre.com>
+---
+ configs/apollo_defconfig | 9 +++------
+ 1 file changed, 3 insertions(+), 6 deletions(-)
+
+diff --git a/configs/apollo_defconfig b/configs/apollo_defconfig
+index c1721eea13..547c52b08c 100644
+--- a/configs/apollo_defconfig
++++ b/configs/apollo_defconfig
+@@ -21,7 +21,10 @@ CONFIG_CMD_MMC=y
+ CONFIG_CMD_REGULATOR=y
+ CONFIG_OF_CONTROL=y
+ CONFIG_DEFAULT_DEVICE_TREE="meson-axg-apollo-evt0"
++CONFIG_ENV_IS_IN_MMC=y
+ CONFIG_NET_RANDOM_ETHADDR=y
++CONFIG_BOOTCOUNT_LIMIT=y
++CONFIG_BOOTCOUNT_ENV=y
+ CONFIG_DM_GPIO=y
+ CONFIG_DM_MMC=y
+ CONFIG_MMC_MESON_GX=y
+@@ -37,9 +40,3 @@ CONFIG_DEBUG_UART_ANNOUNCE=y
+ CONFIG_DEBUG_UART_SKIP_INIT=y
+ CONFIG_MESON_SERIAL=y
+ CONFIG_OF_LIBFDT_OVERLAY=y
+-CONFIG_MMC=y
+-CONFIG_ENV_IS_IN_MMC=y
+-CONFIG_CMD_EXT4=y
+-CONFIG_CMD_FS_GENERIC=y
+-CONFIG_BOOTCOUNT_LIMIT=y
+-CONFIG_BOOTCOUNT_ENV=y
+-- 
+2.19.1
+

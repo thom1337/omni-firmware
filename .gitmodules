@@ -1,0 +1,13 @@
+[submodule "repo/meta-gplv2"]
+	path = repo/meta-gplv2
+	url = git://git.yoctoproject.org/meta-gplv2
+	branch = dunfell
+[submodule "repo/meta-meson"]
+	path = repo/meta-meson
+	url = https://github.com/superna9999/meta-meson.git
+[submodule "repo/meta-openembedded"]
+	path = repo/meta-openembedded
+	url = git://git.openembedded.org/meta-openembedded
+[submodule "repo/poky"]
+	path = repo/poky
+	url = git://git.yoctoproject.org/poky

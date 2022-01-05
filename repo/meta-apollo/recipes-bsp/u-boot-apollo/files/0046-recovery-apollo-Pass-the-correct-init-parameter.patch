@@ -1,0 +1,30 @@
+From df66c2e70fda23fd48050384a87f2ee7d886ed2c Mon Sep 17 00:00:00 2001
+From: Carlo Caione <ccaione@baylibre.com>
+Date: Wed, 28 Nov 2018 16:42:04 +0000
+Subject: [PATCH 46/55] recovery: apollo: Pass the correct init parameter
+
+Signed-off-by: Carlo Caione <ccaione@baylibre.com>
+---
+ include/env_mender.h | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/include/env_mender.h b/include/env_mender.h
+index e823f6dffb..220c6a9607 100644
+--- a/include/env_mender.h
++++ b/include/env_mender.h
+@@ -138,10 +138,10 @@
+ 
+ #define APOLLO_CHECK_RECOVERY \
+     "if run check_reset_button; then " \
+-        "setenv bootargs factory_reset ${bootargs}; " \
++        "setenv bootargs init=/init factory_reset ${bootargs}; " \
+         "setenv mender_boot_part " __stringify(APOLLO_ROOTFS_PART_R_NUMBER) "; " \
+     "else if run check_watchdog || test \"${force_hard_recovery}\" = \"1\"; then " \
+-        "setenv bootargs hard_recovery ${bootargs}; " \
++        "setenv bootargs init=/init hard_recovery ${bootargs}; " \
+         "setenv mender_boot_part " __stringify(APOLLO_ROOTFS_PART_R_NUMBER) "; " \
+     "fi; fi; "
+ 
+-- 
+2.19.1
+

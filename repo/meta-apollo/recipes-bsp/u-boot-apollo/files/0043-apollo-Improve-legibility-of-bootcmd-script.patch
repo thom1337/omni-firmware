@@ -1,0 +1,222 @@
+From ad2261f98febfbe6beae35f914a36d78d6cd876f Mon Sep 17 00:00:00 2001
+From: Carlo Caione <ccaione@baylibre.com>
+Date: Mon, 26 Nov 2018 18:38:54 +0000
+Subject: [PATCH 43/55] apollo: Improve legibility of bootcmd script
+
+No functional changes.
+
+Signed-off-by: Carlo Caione <ccaione@baylibre.com>
+---
+ include/env_mender.h | 182 +++++++++++++++++++------------------------
+ 1 file changed, 82 insertions(+), 100 deletions(-)
+
+diff --git a/include/env_mender.h b/include/env_mender.h
+index 8378383202..14d6aaf213 100644
+--- a/include/env_mender.h
++++ b/include/env_mender.h
+@@ -40,120 +40,102 @@
+ # define MENDER_UBI_SETTINGS
+ #endif
+ 
+-#define MENDER_ENV_SETTINGS                                             \
+-    MENDER_DEFAULT_ALTBOOTCMD                                           \
+-    MENDER_UBI_SETTINGS                                                 \
+-                                                                        \
+-    "bootlimit=1\0"                                                     \
+-    "bootcount=0\0"                                                     \
+-                                                                        \
+-    "upgrade_available=0\0"                                             \
+-                                                                        \
+-    "mender_boot_part=" __stringify(MENDER_ROOTFS_PART_A_NUMBER) "\0"   \
+-                                                                        \
+-    "mender_boot_part_hex=" __stringify(MENDER_ROOTFS_PART_A_NUMBER_HEX) "\0"   \
+-                                                                        \
++#define MENDER_ENV_SETTINGS \
++    MENDER_DEFAULT_ALTBOOTCMD \
++    MENDER_UBI_SETTINGS \
++                                                                        \
++    "bootlimit=1\0" \
++    "bootcount=0\0" \
++    "upgrade_available=0\0" \
++    "mender_boot_part=" __stringify(MENDER_ROOTFS_PART_A_NUMBER) "\0" \
++    "mender_boot_part_hex=" __stringify(MENDER_ROOTFS_PART_A_NUMBER_HEX) "\0" \
+     "mender_uboot_boot=" MENDER_UBOOT_STORAGE_INTERFACE " " __stringify(MENDER_UBOOT_STORAGE_DEVICE) ":" __stringify(MENDER_BOOT_PART_NUMBER_HEX) "\0" \
+-                                                                        \
+-    "mender_uboot_if=" MENDER_UBOOT_STORAGE_INTERFACE "\0"              \
+-                                                                        \
+-    "mender_uboot_dev=" __stringify(MENDER_UBOOT_STORAGE_DEVICE) "\0"   \
+-                                                                        \
+-    "mender_boot_kernel_type=" MENDER_BOOT_KERNEL_TYPE "\0"             \
+-                                                                        \
+-    "mender_kernel_name=" MENDER_KERNEL_NAME "\0"                       \
+-                                                                        \
+-    "mender_ramdisk_name=" MENDER_RAMDISK_NAME "\0"                     \
+-                                                                        \
+-    "mender_dtb_name=" MENDER_DTB_NAME "\0"                             \
+-                                                                        \
+-    "mender_pre_setup_commands=" MENDER_UBOOT_PRE_SETUP_COMMANDS "\0"   \
+-                                                                        \
++    "mender_uboot_if=" MENDER_UBOOT_STORAGE_INTERFACE "\0" \
++    "mender_uboot_dev=" __stringify(MENDER_UBOOT_STORAGE_DEVICE) "\0" \
++    "mender_boot_kernel_type=" MENDER_BOOT_KERNEL_TYPE "\0" \
++    "mender_kernel_name=" MENDER_KERNEL_NAME "\0" \
++    "mender_ramdisk_name=" MENDER_RAMDISK_NAME "\0" \
++    "mender_dtb_name=" MENDER_DTB_NAME "\0" \
++    "mender_pre_setup_commands=" MENDER_UBOOT_PRE_SETUP_COMMANDS "\0" \
+     "mender_post_setup_commands=" MENDER_UBOOT_POST_SETUP_COMMANDS "\0" \
+-                                                                        \
+-    "mender_check_saveenv_canary=1\0"                                   \
+-                                                                        \
+-    "check_reset_button=gpio input aobus-banks10; test $? -eq 0;\0"     \
+-                                                                        \
+-    "mender_setup="                                                     \
+-    "if test \"${mender_saveenv_canary}\" != \"1\"; then "              \
+-    "env default -a; "                                                  \
+-    "setenv mender_saveenv_canary 1; "                                  \
+-    "saveenv; "                                                         \
+-    "fi; "                                                              \
+-    "if test \"${mender_pre_setup_commands}\" != \"\"; "                \
+-    "then "                                                             \
+-    "run mender_pre_setup_commands; "                                   \
+-    "fi; "                                                              \
+-    "setenv mender_kernel_root " MENDER_STORAGE_DEVICE_BASE "${mender_boot_part}; "    \
+-    "if test ${mender_boot_part} = " __stringify(MENDER_ROOTFS_PART_A_NUMBER) "; "     \
+-    "then "                                                                            \
+-    "setenv mender_boot_part_name " MENDER_ROOTFS_PART_A_NAME "; "                     \
+-    "else "                                                                             \
+-    "setenv mender_boot_part_name " MENDER_ROOTFS_PART_B_NAME "; "                     \
+-    "fi; "                                                                             \
+-    "setenv mender_kernel_root_name ${mender_boot_part_name}; "         \
++    "mender_check_saveenv_canary=1\0" \
++    "check_reset_button=gpio input aobus-banks10; test $? -eq 0;\0" \
++    \
++    "mender_setup=" \
++    "if test \"${mender_saveenv_canary}\" != \"1\"; then " \
++        "env default -a; " \
++        "setenv mender_saveenv_canary 1; " \
++        "saveenv; " \
++    "fi; " \
++    "if test \"${mender_pre_setup_commands}\" != \"\"; then " \
++        "run mender_pre_setup_commands; " \
++    "fi; " \
++    "setenv mender_kernel_root " MENDER_STORAGE_DEVICE_BASE "${mender_boot_part}; " \
++    "if test ${mender_boot_part} = " __stringify(MENDER_ROOTFS_PART_A_NUMBER) "; then " \
++        "setenv mender_boot_part_name " MENDER_ROOTFS_PART_A_NAME "; " \
++    "else " \
++        "setenv mender_boot_part_name " MENDER_ROOTFS_PART_B_NAME "; " \
++    "fi; " \
++    "setenv mender_kernel_root_name ${mender_boot_part_name}; " \
+     "setenv mender_uboot_root " MENDER_UBOOT_STORAGE_INTERFACE " " __stringify(MENDER_UBOOT_STORAGE_DEVICE) ":${mender_boot_part_hex}; " \
+-    "setenv mender_uboot_root_name ${mender_boot_part_name}; "          \
+-    "setenv expand_bootargs \"setenv bootargs \\\\\"${bootargs}\\\\\"\"; "              \
+-    "run expand_bootargs; "                                             \
+-    "setenv expand_bootargs; "                                          \
+-    "if test \"${mender_post_setup_commands}\" != \"\"; "               \
+-    "then "                                                             \
+-    "run mender_post_setup_commands; "                                  \
+-    "fi\0"                                                              \
+-                                                                        \
+-    "mender_altbootcmd="                                                \
+-    "if test ${mender_boot_part} = " __stringify(MENDER_ROOTFS_PART_A_NUMBER) "; "     \
+-    "then "                                                                            \
+-    "setenv mender_boot_part " __stringify(MENDER_ROOTFS_PART_B_NUMBER) "; "           \
+-    "setenv mender_boot_part_hex " __stringify(MENDER_ROOTFS_PART_B_NUMBER_HEX) "; "           \
+-    "else "                                                                            \
+-    "setenv mender_boot_part " __stringify(MENDER_ROOTFS_PART_A_NUMBER) "; "           \
+-    "setenv mender_boot_part_hex " __stringify(MENDER_ROOTFS_PART_A_NUMBER_HEX) "; "           \
+-    "fi; "                                                              \
+-    "setenv upgrade_available 0; "                                      \
+-    "saveenv; "                                                         \
+-    "run mender_setup\0"                                                \
+-                                                                        \
+-    "mender_try_to_recover="                                            \
+-    "if test ${upgrade_available} = 1; "                                \
+-    "then reset; "                                                      \
++    "setenv mender_uboot_root_name ${mender_boot_part_name}; " \
++    "setenv expand_bootargs \"setenv bootargs \\\\\"${bootargs}\\\\\"\"; " \
++    "run expand_bootargs; " \
++    "setenv expand_bootargs; " \
++    "if test \"${mender_post_setup_commands}\" != \"\"; then " \
++        "run mender_post_setup_commands; " \
++    "fi\0" \
++    \
++    "mender_altbootcmd=" \
++    "if test ${mender_boot_part} = " __stringify(MENDER_ROOTFS_PART_A_NUMBER) "; then " \
++        "setenv mender_boot_part " __stringify(MENDER_ROOTFS_PART_B_NUMBER) "; " \
++        "setenv mender_boot_part_hex " __stringify(MENDER_ROOTFS_PART_B_NUMBER_HEX) "; " \
++    "else " \
++        "setenv mender_boot_part " __stringify(MENDER_ROOTFS_PART_A_NUMBER) "; " \
++        "setenv mender_boot_part_hex " __stringify(MENDER_ROOTFS_PART_A_NUMBER_HEX) "; " \
++    "fi; " \
++    "setenv upgrade_available 0; " \
++    "saveenv; " \
++    "run mender_setup\0" \
++    \
++    "mender_try_to_recover=" \
++    "if test ${upgrade_available} = 1; " \
++        "then reset; " \
+     "fi\0"
+ 
+ #ifdef MENDER_UBI
+-# define MENDER_BOOTARGS                                                \
+-    "setenv bootargs root=${mender_kernel_root} "                       \
+-    "${mtdparts} "                                                      \
+-    "ubi.mtd=${mender_mtd_ubi_dev_name} "                               \
+-    "rootfstype=ubifs "                                                 \
++# define MENDER_BOOTARGS \
++    "setenv bootargs root=${mender_kernel_root} " \
++    "${mtdparts} " \
++    "ubi.mtd=${mender_mtd_ubi_dev_name} " \
++    "rootfstype=ubifs " \
+     "${bootargs}; "
+-# define MENDER_LOAD_KERNEL_AND_FDT                                     \
+-    "ubi part ${mender_mtd_ubi_dev_name}; "                             \
+-    "ubifsmount ${mender_uboot_root_name}; "                            \
+-    "if test \"${fdt_addr_r}\" != \"\"; then "                          \
+-    "ubifsload ${fdt_addr_r} /boot/${mender_dtb_name}; "                \
+-    "fi; "                                                              \
++# define MENDER_LOAD_KERNEL_AND_FDT \
++    "ubi part ${mender_mtd_ubi_dev_name}; " \
++    "ubifsmount ${mender_uboot_root_name}; " \
++    "if test \"${fdt_addr_r}\" != \"\"; then " \
++        "ubifsload ${fdt_addr_r} /boot/${mender_dtb_name}; " \
++    "fi; " \
+     "ubifsload ${kernel_addr_r} /boot/${mender_kernel_name}; "
+ #else
+-# define MENDER_BOOTARGS                                                \
++# define MENDER_BOOTARGS \
+     "setenv bootargs root=${mender_kernel_root} ${bootargs}; "
+-# define MENDER_LOAD_KERNEL_AND_FDT                                     \
+-    "if test \"${fdt_addr_r}\" != \"\"; then "                          \
+-    "load ${mender_uboot_root} ${fdt_addr_r} /boot/${mender_dtb_name}; " \
+-    "fi; "                                                              \
++# define MENDER_LOAD_KERNEL_AND_FDT \
++    "if test \"${fdt_addr_r}\" != \"\"; then " \
++        "load ${mender_uboot_root} ${fdt_addr_r} /boot/${mender_dtb_name}; " \
++    "fi; " \
+     "load ${mender_uboot_root} ${kernel_addr_r} /boot/${mender_kernel_name}; "
+-# define MENDER_LOAD_RAMDISK                                            \
+-    "if test \"${ramdisk_addr_r}\" != \"\"; then "                      \
+-    "load ${mender_uboot_root} ${ramdisk_addr_r} /boot/${mender_ramdisk_name}; " \
++# define MENDER_LOAD_RAMDISK \
++    "if test \"${ramdisk_addr_r}\" != \"\"; then " \
++        "load ${mender_uboot_root} ${ramdisk_addr_r} /boot/${mender_ramdisk_name}; " \
+     "fi; "
+ #endif
+ 
+-#define CONFIG_MENDER_BOOTCOMMAND                                       \
+-    "run mender_setup; "                                                \
+-    MENDER_BOOTARGS                                                     \
+-    MENDER_LOAD_KERNEL_AND_FDT                                          \
+-    MENDER_LOAD_RAMDISK                                                 \
++#define CONFIG_MENDER_BOOTCOMMAND \
++    "run mender_setup; " \
++    MENDER_BOOTARGS \
++    MENDER_LOAD_KERNEL_AND_FDT \
++    MENDER_LOAD_RAMDISK \
+     "${mender_boot_kernel_type} ${kernel_addr_r} ${ramdisk_addr_r}:${filesize} ${fdt_addr_r}; " \
+     "run mender_try_to_recover"
+ 
+-- 
+2.19.1
+

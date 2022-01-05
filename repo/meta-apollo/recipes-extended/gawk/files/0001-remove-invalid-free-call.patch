@@ -1,0 +1,28 @@
+From b7a0e07bd6bbfb5078a0afaeecffc01e31fd4d64 Mon Sep 17 00:00:00 2001
+From: Jan Kaisrlik <jan.kaisrlik@avast.com>
+Date: Tue, 21 Sep 2021 13:33:38 +0200
+Subject: [PATCH] remove invalid free() call
+
+This may add some leakage to program which we do not care too much since
+it is not running for a long time.
+
+Signed-off-by: Jan Kaisrlik <jan.kaisrlik@avast.com>
+---
+ io.c | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/io.c b/io.c
+index 964c9284..c4d0f118 100644
+--- a/io.c
++++ b/io.c
+@@ -2495,7 +2495,6 @@ iop_alloc(int fd, const char *name, IOBUF *iop)
+ 	}
+ 
+ 	if (iop->fd == INVALID_HANDLE) {
+-		free(iop);
+ 		return NULL;
+ 	}
+ 	if (isatty(iop->fd))
+-- 
+2.33.0
+

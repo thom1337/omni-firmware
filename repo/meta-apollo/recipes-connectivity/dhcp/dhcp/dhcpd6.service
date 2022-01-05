@@ -1,0 +1,17 @@
+[Unit]
+Description=DHCPv6 Server Daemon
+Documentation=man:dhcpd(8) man:dhcpd.conf(5)
+Wants=network-online.target
+After=network.target time-sync.target network-online.target
+
+[Service]
+PIDFile=/run/dhcpd6.pid
+EnvironmentFile=/etc/default/dhcp-server
+EnvironmentFile=-/etc/sysconfig/dhcpd6
+ExecStartPre=/bin/mkdir -p /data/etc/dhcp/
+ExecStartPre=/bin/touch /data/etc/dhcp/dhcpd6.leases
+ExecStart=/usr/sbin/dhcpd -f -6 -cf /data/etc/dhcp/dhcpd6.conf -lf /data/etc/dhcp/dhcpd6.leases -pf /run/dhcpd6.pid $DHCPDARGS -q $INTERFACES
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

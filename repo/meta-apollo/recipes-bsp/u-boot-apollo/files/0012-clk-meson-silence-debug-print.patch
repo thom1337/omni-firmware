@@ -1,0 +1,26 @@
+From 74b7e17813a830df189e3c27655af3a598c347e4 Mon Sep 17 00:00:00 2001
+From: Jerome Brunet <jbrunet@baylibre.com>
+Date: Fri, 26 Oct 2018 15:42:50 +0200
+Subject: [PATCH 12/55] clk: meson: silence debug print
+
+Signed-off-by: Jerome Brunet <jbrunet@baylibre.com>
+---
+ drivers/clk/clk_meson.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/clk/clk_meson.c b/drivers/clk/clk_meson.c
+index 23dc4af908..f0d4d28fd3 100644
+--- a/drivers/clk/clk_meson.c
++++ b/drivers/clk/clk_meson.c
+@@ -351,7 +351,7 @@ static ulong meson_clk_get_rate_by_id(struct clk *clk, unsigned long id)
+ 		return -ENOENT;
+ 	}
+ 
+-	printf("clock %lu has rate %lu\n", id, rate);
++	debug("clock %lu has rate %lu\n", id, rate);
+ 	return rate;
+ }
+ 
+-- 
+2.19.1
+

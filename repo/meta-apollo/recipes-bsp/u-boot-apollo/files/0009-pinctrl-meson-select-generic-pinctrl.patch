@@ -1,0 +1,29 @@
+From 1c15db792df8e5447051ff8dbd0e70895c634357 Mon Sep 17 00:00:00 2001
+From: Jerome Brunet <jbrunet@baylibre.com>
+Date: Thu, 25 Oct 2018 13:15:34 +0200
+Subject: [PATCH 09/55] pinctrl: meson: select generic pinctrl
+
+Meson pinctrl needs generic pinctrl, rather than depending on it
+select it
+
+Signed-off-by: Jerome Brunet <jbrunet@baylibre.com>
+---
+ drivers/pinctrl/meson/Kconfig | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/pinctrl/meson/Kconfig b/drivers/pinctrl/meson/Kconfig
+index 15a8d9c704..fc51b4361a 100644
+--- a/drivers/pinctrl/meson/Kconfig
++++ b/drivers/pinctrl/meson/Kconfig
+@@ -1,7 +1,7 @@
+ if ARCH_MESON
+ 
+ config PINCTRL_MESON
+-	depends on PINCTRL_GENERIC
++	select PINCTRL_GENERIC
+ 	bool
+ 
+ config PINCTRL_MESON_GX_PMX
+-- 
+2.19.1
+

@@ -1,0 +1,74 @@
+From 4161e0f10b61ab931c9e10b81cdd15c1feb80ccb Mon Sep 17 00:00:00 2001
+From: Carlo Caione <ccaione@baylibre.com>
+Date: Thu, 14 Feb 2019 18:31:36 +0000
+Subject: [PATCH 55/55] apollo: Run MFC on first boot
+
+To address AHW-26.
+
+Signed-off-by: Carlo Caione <ccaione@baylibre.com>
+Redacted-by: Martin Vajnar <martin.vajnar@avast.com>
+---
+ include/env_mender.h | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/include/env_mender.h b/include/env_mender.h
+index 31fbdad18c..c6d30c2120 100644
+--- a/include/env_mender.h
++++ b/include/env_mender.h
+@@ -46,6 +46,7 @@
+     \
+     "bootlimit=1\0" \
+     "force_run_eol=1\0" \
++    "force_run_mfc=1\0" \
+     "bootcount=0\0" \
+     "upgrade_available=0\0" \
+     "mender_boot_part_A=" __stringify(MENDER_ROOTFS_PART_A_NUMBER) "\0" \
+@@ -70,6 +71,7 @@
+         "env default -a; " \
+         "setenv mender_saveenv_canary 1; " \
+         "saveenv; " \
++        "reset; " \
+     "fi; " \
+     "if test \"${mender_pre_setup_commands}\" != \"\"; then " \
+         "run mender_pre_setup_commands; " \
+@@ -82,7 +84,6 @@
+     "else " \
+         "setenv mender_boot_part_name " APOLLO_ROOTFS_PART_R_NAME "; " \
+         "setenv mender_boot_part_hex " __stringify(APOLLO_ROOTFS_PART_R_NUMBER_HEX) "; " \
+-        "setenv ramdisk_addr_r \"\";" \
+     "fi; fi; " \
+     "setenv mender_kernel_root_name ${mender_boot_part_name}; " \
+     "setenv mender_uboot_root " MENDER_UBOOT_STORAGE_INTERFACE " " __stringify(MENDER_UBOOT_STORAGE_DEVICE) ":${mender_boot_part_hex}; " \
+@@ -139,13 +140,21 @@
+     "fi; "
+ #endif
+ 
++#define APOLLO_CHECK_MFC \
++    "if test \"${force_run_mfc}\" = \"1\"; then " \
++        "setenv mender_boot_part " __stringify(APOLLO_ROOTFS_PART_R_NUMBER) "; " \
++        "setenv mender_ramdisk_name apollo-mfc-initrd-image-meson-apollo.cpio.gz; " \
++    "fi; "
++
+ #define APOLLO_CHECK_RECOVERY \
+     "if run check_reset_button; then " \
+         "setenv bootargs init=/init factory_reset ${bootargs}; " \
+         "setenv mender_boot_part " __stringify(APOLLO_ROOTFS_PART_R_NUMBER) "; " \
++        "setenv ramdisk_addr_r \"\";" \
+     "else if run check_watchdog || test \"${force_hard_recovery}\" = \"1\"; then " \
+         "setenv bootargs init=/init hard_recovery ${bootargs}; " \
+         "setenv mender_boot_part " __stringify(APOLLO_ROOTFS_PART_R_NUMBER) "; " \
++        "setenv ramdisk_addr_r \"\";" \
+     "fi; fi; "
+ 
+ #define APOLLO_CHECK_EOL \
+@@ -154,6 +163,7 @@
+     "fi; "
+ 
+ #define CONFIG_MENDER_BOOTCOMMAND \
++    APOLLO_CHECK_MFC \
+     APOLLO_CHECK_RECOVERY \
+     "run mender_setup; " \
+     APOLLO_CHECK_EOL \
+-- 
+2.19.1
+

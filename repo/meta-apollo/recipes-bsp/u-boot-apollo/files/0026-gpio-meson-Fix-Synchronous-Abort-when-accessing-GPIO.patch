@@ -1,0 +1,26 @@
+From e2ee68451cdbf9c74f0422dc65811f2e686152da Mon Sep 17 00:00:00 2001
+From: Carlo Caione <ccaione@baylibre.com>
+Date: Tue, 20 Nov 2018 15:02:45 +0000
+Subject: [PATCH 26/55] gpio: meson: Fix Synchronous Abort when accessing GPIOs
+
+Signed-off-by: Carlo Caione <ccaione@baylibre.com>
+---
+ drivers/pinctrl/meson/pinctrl-meson-axg-pmx.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/pinctrl/meson/pinctrl-meson-axg-pmx.c b/drivers/pinctrl/meson/pinctrl-meson-axg-pmx.c
+index 1ad548223b..481ef6358e 100644
+--- a/drivers/pinctrl/meson/pinctrl-meson-axg-pmx.c
++++ b/drivers/pinctrl/meson/pinctrl-meson-axg-pmx.c
+@@ -104,7 +104,7 @@ const struct pinctrl_ops meson_axg_pinctrl_ops = {
+ 
+ static int meson_axg_gpio_request(struct udevice *dev, unsigned offset, const char *label)
+ {
+-	return meson_axg_pmx_update_function(dev, offset, 0);
++	return meson_axg_pmx_update_function(dev->parent, offset, 0);
+ }
+ 
+ static const struct dm_gpio_ops meson_axg_gpio_ops = {
+-- 
+2.19.1
+

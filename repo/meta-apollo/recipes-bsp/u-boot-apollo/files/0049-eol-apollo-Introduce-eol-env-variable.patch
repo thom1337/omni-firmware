@@ -1,0 +1,49 @@
+From afcbe113d4077e70c7305720afae2f7a896f4bbb Mon Sep 17 00:00:00 2001
+From: Carlo Caione <ccaione@baylibre.com>
+Date: Mon, 10 Dec 2018 16:10:17 +0000
+Subject: [PATCH 49/55] eol: apollo: Introduce eol env variable
+
+When 'force_run_eol' is set to 1, 'run_eol' is appended to the bootargs
+parameter to trigger the EOL tests.
+
+Signed-off-by: Carlo Caione <ccaione@baylibre.com>
+---
+ include/configs/apollo.h | 1 +
+ include/env_mender.h     | 6 ++++++
+ 2 files changed, 7 insertions(+)
+
+diff --git a/include/configs/apollo.h b/include/configs/apollo.h
+index d17864c216..63d22188bc 100644
+--- a/include/configs/apollo.h
++++ b/include/configs/apollo.h
+@@ -28,6 +28,7 @@
+ 	"kernel_addr_r=0x08080000\0" \
+ 	"pxefile_addr_r=0x01080000\0" \
+ 	"ramdisk_addr_r=0x13000000\0" \
++	"force_run_eol=1\0" \
+ 	"fdtfile=amlogic/" CONFIG_DEFAULT_DEVICE_TREE ".dtb\0" \
+ 	CHECK_ENV \
+ 	BOOTENV
+diff --git a/include/env_mender.h b/include/env_mender.h
+index 52a95a08e3..f03f810b0d 100644
+--- a/include/env_mender.h
++++ b/include/env_mender.h
+@@ -147,9 +147,15 @@
+         "setenv mender_boot_part " __stringify(APOLLO_ROOTFS_PART_R_NUMBER) "; " \
+     "fi; fi; "
+ 
++#define APOLLO_CHECK_EOL \
++    "if test \"${force_run_eol}\" = \"1\"; then " \
++        "setenv bootargs run_eol ${bootargs}; " \
++    "fi; "
++
+ #define CONFIG_MENDER_BOOTCOMMAND \
+     APOLLO_CHECK_RECOVERY \
+     "run mender_setup; " \
++    APOLLO_CHECK_EOL \
+     MENDER_BOOTARGS \
+     MENDER_LOAD_KERNEL_AND_FDT \
+     MENDER_LOAD_RAMDISK \
+-- 
+2.19.1
+

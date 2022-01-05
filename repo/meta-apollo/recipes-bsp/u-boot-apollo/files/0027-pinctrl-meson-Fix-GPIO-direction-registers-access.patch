@@ -1,0 +1,41 @@
+From 5a47ba1089e2f1d76d84d7228efe6a7ac1957cc4 Mon Sep 17 00:00:00 2001
+From: Carlo Caione <ccaione@baylibre.com>
+Date: Mon, 3 Dec 2018 18:00:42 +0000
+Subject: [PATCH 27/55] pinctrl: meson: Fix GPIO direction registers access
+
+The macros used to set the direction of the GPIO pins are misused,
+resulting in a wrong behavior when trying to read the GPIO input level
+from U-Boot.
+
+A better macro is also used when setting the output direction.
+
+Signed-off-by: Carlo Caione <ccaione@baylibre.com>
+---
+ drivers/pinctrl/meson/pinctrl-meson.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/pinctrl/meson/pinctrl-meson.c b/drivers/pinctrl/meson/pinctrl-meson.c
+index 236be59154..16667d7760 100644
+--- a/drivers/pinctrl/meson/pinctrl-meson.c
++++ b/drivers/pinctrl/meson/pinctrl-meson.c
+@@ -136,7 +136,7 @@ int meson_gpio_direction_input(struct udevice *dev, unsigned int offset)
+ 	if (ret)
+ 		return ret;
+ 
+-	clrsetbits_le32(priv->reg_gpio + reg, BIT(bit), 1);
++	setbits_le32(priv->reg_gpio + reg, BIT(bit));
+ 
+ 	return 0;
+ }
+@@ -152,7 +152,7 @@ int meson_gpio_direction_output(struct udevice *dev,
+ 	if (ret)
+ 		return ret;
+ 
+-	clrsetbits_le32(priv->reg_gpio + reg, BIT(bit), 0);
++	clrbits_le32(priv->reg_gpio + reg, BIT(bit));
+ 
+ 	ret = meson_gpio_calc_reg_and_bit(dev, offset, REG_OUT, &reg, &bit);
+ 	if (ret)
+-- 
+2.19.1
+

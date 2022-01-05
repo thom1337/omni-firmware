@@ -1,0 +1,11 @@
+--------------------------------------------------------------------------------
+                    Machine: @MACHINE@
+      `-`  .oso.    Distro name: @DISTRO@
+     -ssssssso.     Yocto version: @YVERSION@
+     :sm/''s/       Version: @VERSION@
+   ./ssL " so.      Build Date: @DATE@
+   +so++ossssso     Image Features: @IMAGE_FEATURES@
+         `-oss:     Hardware ID: @HWID@
+                    Environment: @ENV@
+================================================================================
+

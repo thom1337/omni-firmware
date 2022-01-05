@@ -1,0 +1,29 @@
+From 0b3c82f95da3176783463b49fdc10b3ad4868c7c Mon Sep 17 00:00:00 2001
+From: Carlo Caione <ccaione@baylibre.com>
+Date: Mon, 3 Dec 2018 15:00:59 +0000
+Subject: [PATCH 47/55] recovery: apollo: Check registers to detect button
+
+The gpio command is not working correctly on the EVT1. Switch to read
+the button status directly from the registers.
+
+Signed-off-by: Carlo Caione <ccaione@baylibre.com>
+---
+ include/env_mender.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/include/env_mender.h b/include/env_mender.h
+index 220c6a9607..8de391d4b9 100644
+--- a/include/env_mender.h
++++ b/include/env_mender.h
+@@ -59,7 +59,7 @@
+     "mender_pre_setup_commands=" MENDER_UBOOT_PRE_SETUP_COMMANDS "\0" \
+     "mender_post_setup_commands=" MENDER_UBOOT_POST_SETUP_COMMANDS "\0" \
+     "mender_check_saveenv_canary=1\0" \
+-    "check_reset_button=gpio input aobus-banks10; test $? -eq 0;\0" \
++    "check_reset_button=setexpr button *0xff800028 \\\\& 0x400; test ${button} -eq 0x0;\0" \
+     "check_watchdog=itest.w *0xff80023c -eq 0xd000; test $? -eq 0;\0" \
+     \
+     "mender_setup=" \
+-- 
+2.19.1
+

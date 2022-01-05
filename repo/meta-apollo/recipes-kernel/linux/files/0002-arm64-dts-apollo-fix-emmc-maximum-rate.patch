@@ -1,0 +1,26 @@
+From 0084557d98bdf1b3e63416d26f8df18fa3d63578 Mon Sep 17 00:00:00 2001
+From: Jerome Brunet <jbrunet@baylibre.com>
+Date: Thu, 29 Nov 2018 17:16:27 +0100
+Subject: [PATCH 02/14] arm64: dts: apollo: fix emmc maximum rate
+
+Signed-off-by: Jerome Brunet <jbrunet@baylibre.com>
+---
+ arch/arm64/boot/dts/amlogic/meson-axg-apollo-evt0.dts | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/amlogic/meson-axg-apollo-evt0.dts b/arch/arm64/boot/dts/amlogic/meson-axg-apollo-evt0.dts
+index b3e4d3d07448..21bd12a1ee76 100644
+--- a/arch/arm64/boot/dts/amlogic/meson-axg-apollo-evt0.dts
++++ b/arch/arm64/boot/dts/amlogic/meson-axg-apollo-evt0.dts
+@@ -120,7 +120,7 @@
+ 
+ 	bus-width = <8>;
+ 	cap-mmc-highspeed;
+-	max-frequency = <180000000>;
++	max-frequency = <200000000>;
+ 	non-removable;
+ 	disable-wp;
+ 	mmc-ddr-1_8v;
+-- 
+2.30.2
+

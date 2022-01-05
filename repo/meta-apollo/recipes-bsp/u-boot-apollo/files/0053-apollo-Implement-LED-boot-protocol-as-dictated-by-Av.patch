@@ -1,0 +1,61 @@
+From 079cc36e2db20d144554f2411fb33d48fef749b7 Mon Sep 17 00:00:00 2001
+From: Carlo Caione <ccaione@baylibre.com>
+Date: Mon, 11 Feb 2019 09:18:30 +0000
+Subject: [PATCH 53/55] apollo: Implement LED boot protocol as dictated by
+ Avast
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+According to the guidelines provided for the LEDs:
+- Plug in the power cord — White
+- U-boot is executing & reset button is being pressed — LED Off
+- U-boot is executing (normal operation) — Blue
+
+With:
+Blue – B:247 R:1 G:51 (brightness)
+
+Unfortunately U-Boot doesn't support neither the PWM LEDs framework nor
+the PWM controller for the Amlogic SoCs. So we just directly program the
+registers.
+
+Signed-off-by: Carlo Caione <ccaione@baylibre.com>
+---
+ include/configs/apollo.h | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/include/configs/apollo.h b/include/configs/apollo.h
+index 63d22188bc..29e9870025 100644
+--- a/include/configs/apollo.h
++++ b/include/configs/apollo.h
+@@ -9,7 +9,6 @@
+ #ifndef __CONFIG_H
+ #define __CONFIG_H
+ 
+-
+ #define BOOT_TARGET_DEVICES(func) \
+ 	func(ROMUSB, romusb, na) \
+ 	func(MMC, mmc, 0)
+@@ -33,6 +32,19 @@
+ 	CHECK_ENV \
+ 	BOOTENV
+ 
++#define CONFIG_PREBOOT \
++	"mw.l 0xff6344b0 0x33000000; " \
++	"mw.l 0xff6344b4 0x00000003; " \
++	"run check_reset_button; " \
++	"if test $? -ne 0; then " \
++		"mw.l 0xffd1a000 0xEC7C07A9; " \
++		"mw.l 0xffd1a004 0x00500008; " \
++		"mw.l 0xffd1a008 0x00008201; " \
++		"mw.l 0xffd1b000 0x00F5F330; " \
++		"mw.l 0xffd1b004 0x30D4C351; " \
++		"mw.l 0xffd1b008 0x00828203; " \
++	"fi;"
++
+ #include <configs/meson64.h>
+ 
+ #endif /* __CONFIG_H */
+-- 
+2.19.1
+

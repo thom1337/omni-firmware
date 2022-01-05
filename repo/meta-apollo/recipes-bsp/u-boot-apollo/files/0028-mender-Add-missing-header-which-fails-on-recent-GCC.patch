@@ -1,0 +1,24 @@
+From d2a5d393aa7ebfe4ba769055e8d08a2985539204 Mon Sep 17 00:00:00 2001
+From: Kristian Amlie <kristian.amlie@mender.io>
+Date: Mon, 15 Feb 2016 15:57:32 +0100
+Subject: [PATCH 28/55] mender: Add missing header which fails on recent GCC.
+
+---
+ tools/env/fw_env.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/tools/env/fw_env.c b/tools/env/fw_env.c
+index a5d75958e1..a9740aa82f 100644
+--- a/tools/env/fw_env.c
++++ b/tools/env/fw_env.c
+@@ -19,6 +19,7 @@
+ #include <ctype.h>
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <stdint.h>
+ #include <stddef.h>
+ #include <string.h>
+ #include <sys/types.h>
+-- 
+2.19.1
+

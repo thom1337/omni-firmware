@@ -1,0 +1,1482 @@
+From 9eac9f36f36f2ad7614a50f59b1dc39f1ba5b9a1 Mon Sep 17 00:00:00 2001
+From: Vladyslav Movchan <vladyslav.movchan@avast.com>
+Date: Thu, 24 Sep 2020 15:16:23 +0200
+Subject: [PATCH] Add avastmark and connavastmark support
+
+---
+ extensions/libxt_AVASTMARK.c          | 343 ++++++++++++++++++++
+ extensions/libxt_AVASTMARK.man        |  25 ++
+ extensions/libxt_AVASTMARK.t          |   7 +
+ extensions/libxt_AVASTMARK.txlate     |  23 ++
+ extensions/libxt_CONNAVASTMARK.c      | 431 ++++++++++++++++++++++++++
+ extensions/libxt_CONNAVASTMARK.man    |  53 ++++
+ extensions/libxt_CONNAVASTMARK.t      |   7 +
+ extensions/libxt_CONNAVASTMARK.txlate |  23 ++
+ extensions/libxt_avastmark.c          | 181 +++++++++++
+ extensions/libxt_avastmark.man        |   9 +
+ extensions/libxt_avastmark.t          |   7 +
+ extensions/libxt_avastmark.txlate     |   5 +
+ extensions/libxt_connavastmark.c      | 203 ++++++++++++
+ extensions/libxt_connavastmark.man    |   6 +
+ extensions/libxt_connavastmark.t      |   9 +
+ extensions/libxt_connavastmark.txlate |  14 +
+ 16 files changed, 1346 insertions(+)
+ create mode 100644 extensions/libxt_AVASTMARK.c
+ create mode 100644 extensions/libxt_AVASTMARK.man
+ create mode 100644 extensions/libxt_AVASTMARK.t
+ create mode 100644 extensions/libxt_AVASTMARK.txlate
+ create mode 100644 extensions/libxt_CONNAVASTMARK.c
+ create mode 100644 extensions/libxt_CONNAVASTMARK.man
+ create mode 100644 extensions/libxt_CONNAVASTMARK.t
+ create mode 100644 extensions/libxt_CONNAVASTMARK.txlate
+ create mode 100644 extensions/libxt_avastmark.c
+ create mode 100644 extensions/libxt_avastmark.man
+ create mode 100644 extensions/libxt_avastmark.t
+ create mode 100644 extensions/libxt_avastmark.txlate
+ create mode 100644 extensions/libxt_connavastmark.c
+ create mode 100644 extensions/libxt_connavastmark.man
+ create mode 100644 extensions/libxt_connavastmark.t
+ create mode 100644 extensions/libxt_connavastmark.txlate
+
+diff --git a/extensions/libxt_AVASTMARK.c b/extensions/libxt_AVASTMARK.c
+new file mode 100644
+index 0000000..d21e35b
+--- /dev/null
++++ b/extensions/libxt_AVASTMARK.c
+@@ -0,0 +1,343 @@
++#include <stdbool.h>
++#include <stdio.h>
++#include <xtables.h>
++#include <linux/netfilter/xt_MARK.h>
++
++/* Version 0 */
++struct xt_mark_target_info {
++	unsigned long mark;
++};
++
++/* Version 1 */
++enum {
++	XT_MARK_SET=0,
++	XT_MARK_AND,
++	XT_MARK_OR,
++};
++
++struct xt_mark_target_info_v1 {
++	unsigned long mark;
++	uint8_t mode;
++};
++
++enum {
++	O_SET_MARK = 0,
++	O_AND_MARK,
++	O_OR_MARK,
++	O_XOR_MARK,
++	O_SET_XMARK,
++	F_SET_MARK  = 1 << O_SET_MARK,
++	F_AND_MARK  = 1 << O_AND_MARK,
++	F_OR_MARK   = 1 << O_OR_MARK,
++	F_XOR_MARK  = 1 << O_XOR_MARK,
++	F_SET_XMARK = 1 << O_SET_XMARK,
++	F_ANY       = F_SET_MARK | F_AND_MARK | F_OR_MARK |
++	              F_XOR_MARK | F_SET_XMARK,
++};
++
++static void MARK_help(void)
++{
++	printf(
++"AVASTMARK target options:\n"
++"  --set-mark value                   Set nfmark value\n"
++"  --and-mark value                   Binary AND the nfmark with value\n"
++"  --or-mark  value                   Binary OR  the nfmark with value\n");
++}
++
++static const struct xt_option_entry MARK_opts[] = {
++	{.name = "set-mark", .id = O_SET_MARK, .type = XTTYPE_UINT32,
++	 .excl = F_ANY},
++	{.name = "and-mark", .id = O_AND_MARK, .type = XTTYPE_UINT32,
++	 .excl = F_ANY},
++	{.name = "or-mark", .id = O_OR_MARK, .type = XTTYPE_UINT32,
++	 .excl = F_ANY},
++	XTOPT_TABLEEND,
++};
++
++static const struct xt_option_entry mark_tg_opts[] = {
++	{.name = "set-xmark", .id = O_SET_XMARK, .type = XTTYPE_MARKMASK32,
++	 .excl = F_ANY},
++	{.name = "set-mark", .id = O_SET_MARK, .type = XTTYPE_MARKMASK32,
++	 .excl = F_ANY},
++	{.name = "and-mark", .id = O_AND_MARK, .type = XTTYPE_UINT32,
++	 .excl = F_ANY},
++	{.name = "or-mark", .id = O_OR_MARK, .type = XTTYPE_UINT32,
++	 .excl = F_ANY},
++	{.name = "xor-mark", .id = O_XOR_MARK, .type = XTTYPE_UINT32,
++	 .excl = F_ANY},
++	XTOPT_TABLEEND,
++};
++
++static void mark_tg_help(void)
++{
++	printf(
++"AVASTMARK target options:\n"
++"  --set-xmark value[/mask]  Clear bits in mask and XOR value into nfmark\n"
++"  --set-mark value[/mask]   Clear bits in mask and OR value into nfmark\n"
++"  --and-mark bits           Binary AND the nfmark with bits\n"
++"  --or-mark bits            Binary OR the nfmark with bits\n"
++"  --xor-mark bits           Binary XOR the nfmark with bits\n"
++"\n");
++}
++
++static void MARK_parse_v0(struct xt_option_call *cb)
++{
++	struct xt_mark_target_info *markinfo = cb->data;
++
++	xtables_option_parse(cb);
++	switch (cb->entry->id) {
++	case O_SET_MARK:
++		markinfo->mark = cb->val.mark;
++		break;
++	default:
++		xtables_error(PARAMETER_PROBLEM,
++			   "AVASTMARK target: kernel too old for --%s",
++			   cb->entry->name);
++	}
++}
++
++static void MARK_check(struct xt_fcheck_call *cb)
++{
++	if (cb->xflags == 0)
++		xtables_error(PARAMETER_PROBLEM,
++		           "AVASTMARK target: Parameter --set/and/or-mark"
++			   " is required");
++}
++
++static void MARK_parse_v1(struct xt_option_call *cb)
++{
++	struct xt_mark_target_info_v1 *markinfo = cb->data;
++
++	xtables_option_parse(cb);
++	switch (cb->entry->id) {
++	case O_SET_MARK:
++	        markinfo->mode = XT_MARK_SET;
++		break;
++	case O_AND_MARK:
++	        markinfo->mode = XT_MARK_AND;
++		break;
++	case O_OR_MARK:
++	        markinfo->mode = XT_MARK_OR;
++		break;
++	}
++	markinfo->mark = cb->val.u32;
++}
++
++static void mark_tg_parse(struct xt_option_call *cb)
++{
++	struct xt_mark_tginfo2 *info = cb->data;
++
++	xtables_option_parse(cb);
++	switch (cb->entry->id) {
++	case O_SET_XMARK:
++		info->mark = cb->val.mark;
++		info->mask = cb->val.mask;
++		break;
++	case O_SET_MARK:
++		info->mark = cb->val.mark;
++		info->mask = cb->val.mark | cb->val.mask;
++		break;
++	case O_AND_MARK:
++		info->mark = 0;
++		info->mask = ~cb->val.u32;
++		break;
++	case O_OR_MARK:
++		info->mark = info->mask = cb->val.u32;
++		break;
++	case O_XOR_MARK:
++		info->mark = cb->val.u32;
++		info->mask = 0;
++		break;
++	}
++}
++
++static void mark_tg_check(struct xt_fcheck_call *cb)
++{
++	if (cb->xflags == 0)
++		xtables_error(PARAMETER_PROBLEM, "AVASTMARK: One of the --set-xmark, "
++		           "--{and,or,xor,set}-mark options is required");
++}
++
++static void
++print_mark(unsigned long mark)
++{
++	printf(" 0x%lx", mark);
++}
++
++static void MARK_print_v0(const void *ip,
++                          const struct xt_entry_target *target, int numeric)
++{
++	const struct xt_mark_target_info *markinfo =
++		(const struct xt_mark_target_info *)target->data;
++	printf(" AVASTMARK set");
++	print_mark(markinfo->mark);
++}
++
++static void MARK_save_v0(const void *ip, const struct xt_entry_target *target)
++{
++	const struct xt_mark_target_info *markinfo =
++		(const struct xt_mark_target_info *)target->data;
++
++	printf(" --set-mark");
++	print_mark(markinfo->mark);
++}
++
++static void MARK_print_v1(const void *ip, const struct xt_entry_target *target,
++                          int numeric)
++{
++	const struct xt_mark_target_info_v1 *markinfo =
++		(const struct xt_mark_target_info_v1 *)target->data;
++
++	switch (markinfo->mode) {
++	case XT_MARK_SET:
++		printf(" AVASTMARK set");
++		break;
++	case XT_MARK_AND:
++		printf(" AVASTMARK and");
++		break;
++	case XT_MARK_OR:
++		printf(" AVASTMARK or");
++		break;
++	}
++	print_mark(markinfo->mark);
++}
++
++static void mark_tg_print(const void *ip, const struct xt_entry_target *target,
++                          int numeric)
++{
++	const struct xt_mark_tginfo2 *info = (const void *)target->data;
++
++	if (info->mark == 0)
++		printf(" AVASTMARK and 0x%x", (unsigned int)(uint32_t)~info->mask);
++	else if (info->mark == info->mask)
++		printf(" AVASTMARK or 0x%x", info->mark);
++	else if (info->mask == 0)
++		printf(" AVASTMARK xor 0x%x", info->mark);
++	else if (info->mask == 0xffffffffU)
++		printf(" AVASTMARK set 0x%x", info->mark);
++	else
++		printf(" AVASTMARK xset 0x%x/0x%x", info->mark, info->mask);
++}
++
++static void MARK_save_v1(const void *ip, const struct xt_entry_target *target)
++{
++	const struct xt_mark_target_info_v1 *markinfo =
++		(const struct xt_mark_target_info_v1 *)target->data;
++
++	switch (markinfo->mode) {
++	case XT_MARK_SET:
++		printf(" --set-mark");
++		break;
++	case XT_MARK_AND:
++		printf(" --and-mark");
++		break;
++	case XT_MARK_OR:
++		printf(" --or-mark");
++		break;
++	}
++	print_mark(markinfo->mark);
++}
++
++static void mark_tg_save(const void *ip, const struct xt_entry_target *target)
++{
++	const struct xt_mark_tginfo2 *info = (const void *)target->data;
++
++	printf(" --set-xmark 0x%x/0x%x", info->mark, info->mask);
++}
++
++static int mark_tg_xlate(struct xt_xlate *xl,
++			 const struct xt_xlate_tg_params *params)
++{
++	const struct xt_mark_tginfo2 *info = (const void *)params->target->data;
++
++	xt_xlate_add(xl, "meta avastmark set ");
++
++	if (info->mark == 0)
++		xt_xlate_add(xl, "avastmark and 0x%x ", ~info->mask);
++	else if (info->mark == info->mask)
++		xt_xlate_add(xl, "avastmark or 0x%x ", info->mark);
++	else if (info->mask == 0)
++		xt_xlate_add(xl, "avastmark xor 0x%x ", info->mark);
++	else if (info->mask == 0xffffffffU)
++		xt_xlate_add(xl, "0x%x ", info->mark);
++	else
++		xt_xlate_add(xl, "avastmark and 0x%x xor 0x%x ", ~info->mask,
++			     info->mark);
++
++	return 1;
++}
++
++static int MARK_xlate(struct xt_xlate *xl,
++		      const struct xt_xlate_tg_params *params)
++{
++	const struct xt_mark_target_info_v1 *markinfo =
++		(const struct xt_mark_target_info_v1 *)params->target->data;
++
++	xt_xlate_add(xl, "meta avastmark set ");
++
++	switch(markinfo->mode) {
++	case XT_MARK_SET:
++		xt_xlate_add(xl, "0x%x ", markinfo->mark);
++		break;
++	case XT_MARK_AND:
++		xt_xlate_add(xl, "avastmark and 0x%x ", markinfo->mark);
++		break;
++	case XT_MARK_OR:
++		xt_xlate_add(xl, "avastmark or 0x%x ", markinfo->mark);
++		break;
++	}
++
++	return 1;
++}
++
++static struct xtables_target mark_tg_reg[] = {
++	{
++		.family        = NFPROTO_UNSPEC,
++		.name          = "AVASTMARK",
++		.version       = XTABLES_VERSION,
++		.revision      = 0,
++		.size          = XT_ALIGN(sizeof(struct xt_mark_target_info)),
++		.userspacesize = XT_ALIGN(sizeof(struct xt_mark_target_info)),
++		.help          = MARK_help,
++		.print         = MARK_print_v0,
++		.save          = MARK_save_v0,
++		.x6_parse      = MARK_parse_v0,
++		.x6_fcheck     = MARK_check,
++		.x6_options    = MARK_opts,
++	},
++	{
++		.family        = NFPROTO_IPV4,
++		.name          = "AVASTMARK",
++		.version       = XTABLES_VERSION,
++		.revision      = 1,
++		.size          = XT_ALIGN(sizeof(struct xt_mark_target_info_v1)),
++		.userspacesize = XT_ALIGN(sizeof(struct xt_mark_target_info_v1)),
++		.help          = MARK_help,
++		.print         = MARK_print_v1,
++		.save          = MARK_save_v1,
++		.x6_parse      = MARK_parse_v1,
++		.x6_fcheck     = MARK_check,
++		.x6_options    = MARK_opts,
++		.xlate	       = MARK_xlate,
++	},
++	{
++		.version       = XTABLES_VERSION,
++		.name          = "AVASTMARK",
++		.revision      = 2,
++		.family        = NFPROTO_UNSPEC,
++		.size          = XT_ALIGN(sizeof(struct xt_mark_tginfo2)),
++		.userspacesize = XT_ALIGN(sizeof(struct xt_mark_tginfo2)),
++		.help          = mark_tg_help,
++		.print         = mark_tg_print,
++		.save          = mark_tg_save,
++		.x6_parse      = mark_tg_parse,
++		.x6_fcheck     = mark_tg_check,
++		.x6_options    = mark_tg_opts,
++		.xlate	       = mark_tg_xlate,
++	},
++};
++
++void _init(void)
++{
++	xtables_register_targets(mark_tg_reg, ARRAY_SIZE(mark_tg_reg));
++}
+diff --git a/extensions/libxt_AVASTMARK.man b/extensions/libxt_AVASTMARK.man
+new file mode 100644
+index 0000000..3da449f
+--- /dev/null
++++ b/extensions/libxt_AVASTMARK.man
+@@ -0,0 +1,25 @@
++This target is used to set the Netfilter avastmark value associated with the
++packet.
++The avastmark field is 32 bits wide.
++.TP
++\fB\-\-set\-xmark\fP \fIvalue\fP[\fB/\fP\fImask\fP]
++Zeroes out the bits given by \fImask\fP and XORs \fIvalue\fP into the packet
++mark ("nfmark"). If \fImask\fP is omitted, 0xFFFFFFFF is assumed.
++.TP
++\fB\-\-set\-mark\fP \fIvalue\fP[\fB/\fP\fImask\fP]
++Zeroes out the bits given by \fImask\fP and ORs \fIvalue\fP into the packet
++mark. If \fImask\fP is omitted, 0xFFFFFFFF is assumed.
++.PP
++The following mnemonics are available:
++.TP
++\fB\-\-and\-mark\fP \fIbits\fP
++Binary AND the nfmark with \fIbits\fP. (Mnemonic for \fB\-\-set\-xmark
++0/\fP\fIinvbits\fP, where \fIinvbits\fP is the binary negation of \fIbits\fP.)
++.TP
++\fB\-\-or\-mark\fP \fIbits\fP
++Binary OR the nfmark with \fIbits\fP. (Mnemonic for \fB\-\-set\-xmark\fP
++\fIbits\fP\fB/\fP\fIbits\fP.)
++.TP
++\fB\-\-xor\-mark\fP \fIbits\fP
++Binary XOR the nfmark with \fIbits\fP. (Mnemonic for \fB\-\-set\-xmark\fP
++\fIbits\fP\fB/0\fP.)
+diff --git a/extensions/libxt_AVASTMARK.t b/extensions/libxt_AVASTMARK.t
+new file mode 100644
+index 0000000..1640e7c
+--- /dev/null
++++ b/extensions/libxt_AVASTMARK.t
+@@ -0,0 +1,7 @@
++:INPUT,FORWARD,OUTPUT
++-j AVASTMARK --set-xmark 0xfeedcafe/0xfeedcafe;=;OK
++-j AVASTMARK --set-xmark 0;=;OK
++-j AVASTMARK --set-xmark 4294967295;-j AVASTMARK --set-xmark 0xffffffff;OK
++-j AVASTMARK --set-xmark 4294967296;;FAIL
++-j AVASTMARK --set-xmark -1;;FAIL
++-j AVASTMARK;;FAIL
+diff --git a/extensions/libxt_AVASTMARK.txlate b/extensions/libxt_AVASTMARK.txlate
+new file mode 100644
+index 0000000..442f0f2
+--- /dev/null
++++ b/extensions/libxt_AVASTMARK.txlate
+@@ -0,0 +1,23 @@
++iptables-translate -t mangle -A OUTPUT -j AVASTMARK --set-mark 64
++nft add rule ip mangle OUTPUT counter meta avastmark set 0x40
++
++iptables-translate -t mangle -A OUTPUT -j AVASTMARK --set-xmark 0x40/0x32
++nft add rule ip mangle OUTPUT counter meta avastmark set avastmark and 0xffffffcd xor 0x40
++
++iptables-translate -t mangle -A OUTPUT -j AVASTMARK --or-mark 64
++nft add rule ip mangle OUTPUT counter meta avastmark set avastmark or 0x40
++
++iptables-translate -t mangle -A OUTPUT -j AVASTMARK --and-mark 64
++nft add rule ip mangle OUTPUT counter meta avastmark set avastmark and 0x40
++
++iptables-translate -t mangle -A OUTPUT -j AVASTMARK --xor-mark 64
++nft add rule ip mangle OUTPUT counter meta avastmark set avastmark xor 0x40
++
++iptables-translate -t mangle -A PREROUTING -j AVASTMARK --set-mark 0x64
++nft add rule ip mangle PREROUTING counter meta avastmark set 0x64
++
++iptables-translate -t mangle -A PREROUTING -j AVASTMARK --and-mark 0x64
++nft add rule ip mangle PREROUTING counter meta avastmark set avastmark and 0x64
++
++iptables-translate -t mangle -A PREROUTING -j AVASTMARK --or-mark 0x64
++nft add rule ip mangle PREROUTING counter meta avastmark set avastmark or 0x64
+diff --git a/extensions/libxt_CONNAVASTMARK.c b/extensions/libxt_CONNAVASTMARK.c
+new file mode 100644
+index 0000000..7969e55
+--- /dev/null
++++ b/extensions/libxt_CONNAVASTMARK.c
+@@ -0,0 +1,431 @@
++/* Shared library add-on to iptables to add CONNMARK target support.
++ *
++ * (C) 2002,2004 MARA Systems AB <http://www.marasystems.com>
++ * by Henrik Nordstrom <hno@marasystems.com>
++ *
++ * Version 1.1
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++ */
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <xtables.h>
++#include <linux/netfilter/xt_CONNMARK.h>
++
++struct xt_connmark_target_info {
++	unsigned long mark;
++	unsigned long mask;
++	uint8_t mode;
++};
++
++enum {
++	O_SET_MARK = 0,
++	O_SAVE_MARK,
++	O_RESTORE_MARK,
++	O_AND_MARK,
++	O_OR_MARK,
++	O_XOR_MARK,
++	O_SET_XMARK,
++	O_CTMASK,
++	O_NFMASK,
++	O_MASK,
++	F_SET_MARK     = 1 << O_SET_MARK,
++	F_SAVE_MARK    = 1 << O_SAVE_MARK,
++	F_RESTORE_MARK = 1 << O_RESTORE_MARK,
++	F_AND_MARK     = 1 << O_AND_MARK,
++	F_OR_MARK      = 1 << O_OR_MARK,
++	F_XOR_MARK     = 1 << O_XOR_MARK,
++	F_SET_XMARK    = 1 << O_SET_XMARK,
++	F_CTMASK       = 1 << O_CTMASK,
++	F_NFMASK       = 1 << O_NFMASK,
++	F_MASK         = 1 << O_MASK,
++	F_OP_ANY       = F_SET_MARK | F_SAVE_MARK | F_RESTORE_MARK |
++	                 F_AND_MARK | F_OR_MARK | F_XOR_MARK | F_SET_XMARK,
++};
++
++static void CONNMARK_help(void)
++{
++	printf(
++"CONNAVASTMARK target options:\n"
++"  --set-mark value[/mask]       Set conntrack avastmark value\n"
++"  --save-mark [--mask mask]     Save the packet nfmark in the connection\n"
++"  --restore-mark [--mask mask]  Restore saved nfmark value\n");
++}
++
++#define s struct xt_connmark_target_info
++static const struct xt_option_entry CONNMARK_opts[] = {
++	{.name = "set-mark", .id = O_SET_MARK, .type = XTTYPE_MARKMASK32,
++	 .excl = F_OP_ANY},
++	{.name = "save-mark", .id = O_SAVE_MARK, .type = XTTYPE_NONE,
++	 .excl = F_OP_ANY},
++	{.name = "restore-mark", .id = O_RESTORE_MARK, .type = XTTYPE_NONE,
++	 .excl = F_OP_ANY},
++	{.name = "mask", .id = O_MASK, .type = XTTYPE_UINT32},
++	XTOPT_TABLEEND,
++};
++#undef s
++
++#define s struct xt_connmark_tginfo1
++static const struct xt_option_entry connmark_tg_opts[] = {
++	{.name = "set-xmark", .id = O_SET_XMARK, .type = XTTYPE_MARKMASK32,
++	 .excl = F_OP_ANY},
++	{.name = "set-mark", .id = O_SET_MARK, .type = XTTYPE_MARKMASK32,
++	 .excl = F_OP_ANY},
++	{.name = "and-mark", .id = O_AND_MARK, .type = XTTYPE_UINT32,
++	 .excl = F_OP_ANY},
++	{.name = "or-mark", .id = O_OR_MARK, .type = XTTYPE_UINT32,
++	 .excl = F_OP_ANY},
++	{.name = "xor-mark", .id = O_XOR_MARK, .type = XTTYPE_UINT32,
++	 .excl = F_OP_ANY},
++	{.name = "save-mark", .id = O_SAVE_MARK, .type = XTTYPE_NONE,
++	 .excl = F_OP_ANY},
++	{.name = "restore-mark", .id = O_RESTORE_MARK, .type = XTTYPE_NONE,
++	 .excl = F_OP_ANY},
++	{.name = "ctmask", .id = O_CTMASK, .type = XTTYPE_UINT32,
++	 .excl = F_MASK, .flags = XTOPT_PUT, XTOPT_POINTER(s, ctmask)},
++	{.name = "nfmask", .id = O_NFMASK, .type = XTTYPE_UINT32,
++	 .excl = F_MASK, .flags = XTOPT_PUT, XTOPT_POINTER(s, nfmask)},
++	{.name = "mask", .id = O_MASK, .type = XTTYPE_UINT32,
++	 .excl = F_CTMASK | F_NFMASK},
++	XTOPT_TABLEEND,
++};
++#undef s
++
++static void connmark_tg_help(void)
++{
++	printf(
++"CONNAVASTMARK target options:\n"
++"  --set-xmark value[/ctmask]    Zero mask bits and XOR ctmark with value\n"
++"  --save-mark [--ctmask mask] [--nfmask mask]\n"
++"                                Copy ctmark to nfmark using masks\n"
++"  --restore-mark [--ctmask mask] [--nfmask mask]\n"
++"                                Copy nfmark to ctmark using masks\n"
++"  --set-mark value[/mask]       Set conntrack avastmark value\n"
++"  --save-mark [--mask mask]     Save the packet nfmark in the connection\n"
++"  --restore-mark [--mask mask]  Restore saved nfmark value\n"
++"  --and-mark value              Binary AND the ctmark with bits\n"
++"  --or-mark value               Binary OR  the ctmark with bits\n"
++"  --xor-mark value              Binary XOR the ctmark with bits\n"
++);
++}
++
++static void connmark_tg_init(struct xt_entry_target *target)
++{
++	struct xt_connmark_tginfo1 *info = (void *)target->data;
++
++	/*
++	 * Need these defaults for --save-mark/--restore-mark if no
++	 * --ctmark or --nfmask is given.
++	 */
++	info->ctmask = UINT32_MAX;
++	info->nfmask = UINT32_MAX;
++}
++
++static void CONNMARK_parse(struct xt_option_call *cb)
++{
++	struct xt_connmark_target_info *markinfo = cb->data;
++
++	xtables_option_parse(cb);
++	switch (cb->entry->id) {
++	case O_SET_MARK:
++		markinfo->mode = XT_CONNMARK_SET;
++		markinfo->mark = cb->val.mark;
++		markinfo->mask = cb->val.mask;
++		break;
++	case O_SAVE_MARK:
++		markinfo->mode = XT_CONNMARK_SAVE;
++		break;
++	case O_RESTORE_MARK:
++		markinfo->mode = XT_CONNMARK_RESTORE;
++		break;
++	case O_MASK:
++		markinfo->mask = cb->val.u32;
++		break;
++	}
++}
++
++static void connmark_tg_parse(struct xt_option_call *cb)
++{
++	struct xt_connmark_tginfo1 *info = cb->data;
++
++	xtables_option_parse(cb);
++	switch (cb->entry->id) {
++	case O_SET_XMARK:
++		info->mode   = XT_CONNMARK_SET;
++		info->ctmark = cb->val.mark;
++		info->ctmask = cb->val.mask;
++		break;
++	case O_SET_MARK:
++		info->mode   = XT_CONNMARK_SET;
++		info->ctmark = cb->val.mark;
++		info->ctmask = cb->val.mark | cb->val.mask;
++		break;
++	case O_AND_MARK:
++		info->mode   = XT_CONNMARK_SET;
++		info->ctmark = 0;
++		info->ctmask = ~cb->val.u32;
++		break;
++	case O_OR_MARK:
++		info->mode   = XT_CONNMARK_SET;
++		info->ctmark = cb->val.u32;
++		info->ctmask = cb->val.u32;
++		break;
++	case O_XOR_MARK:
++		info->mode   = XT_CONNMARK_SET;
++		info->ctmark = cb->val.u32;
++		info->ctmask = 0;
++		break;
++	case O_SAVE_MARK:
++		info->mode = XT_CONNMARK_SAVE;
++		break;
++	case O_RESTORE_MARK:
++		info->mode = XT_CONNMARK_RESTORE;
++		break;
++	case O_MASK:
++		info->nfmask = info->ctmask = cb->val.u32;
++		break;
++	}
++}
++
++static void connmark_tg_check(struct xt_fcheck_call *cb)
++{
++	if (!(cb->xflags & F_OP_ANY))
++		xtables_error(PARAMETER_PROBLEM,
++		           "CONNAVASTMARK target: No operation specified");
++}
++
++static void
++print_mark(unsigned long mark)
++{
++	printf("0x%lx", mark);
++}
++
++static void
++print_mask(const char *text, unsigned long mask)
++{
++	if (mask != 0xffffffffUL)
++		printf("%s0x%lx", text, mask);
++}
++
++static void CONNMARK_print(const void *ip,
++                           const struct xt_entry_target *target, int numeric)
++{
++	const struct xt_connmark_target_info *markinfo =
++		(const struct xt_connmark_target_info *)target->data;
++	switch (markinfo->mode) {
++	case XT_CONNMARK_SET:
++	    printf(" CONNAVASTMARK set ");
++	    print_mark(markinfo->mark);
++	    print_mask("/", markinfo->mask);
++	    break;
++	case XT_CONNMARK_SAVE:
++	    printf(" CONNAVASTMARK save ");
++	    print_mask("mask ", markinfo->mask);
++	    break;
++	case XT_CONNMARK_RESTORE:
++	    printf(" CONNAVASTMARK restore ");
++	    print_mask("mask ", markinfo->mask);
++	    break;
++	default:
++	    printf(" ERROR: UNKNOWN CONNAVASTMARK MODE");
++	    break;
++	}
++}
++
++static void
++connmark_tg_print(const void *ip, const struct xt_entry_target *target,
++                  int numeric)
++{
++	const struct xt_connmark_tginfo1 *info = (const void *)target->data;
++
++	switch (info->mode) {
++	case XT_CONNMARK_SET:
++		if (info->ctmark == 0)
++			printf(" CONNAVASTMARK and 0x%x",
++			       (unsigned int)(uint32_t)~info->ctmask);
++		else if (info->ctmark == info->ctmask)
++			printf(" CONNAVASTMARK or 0x%x", info->ctmark);
++		else if (info->ctmask == 0)
++			printf(" CONNAVASTMARK xor 0x%x", info->ctmark);
++		else if (info->ctmask == 0xFFFFFFFFU)
++			printf(" CONNAVASTMARK set 0x%x", info->ctmark);
++		else
++			printf(" CONNAVASTMARK xset 0x%x/0x%x",
++			       info->ctmark, info->ctmask);
++		break;
++	case XT_CONNMARK_SAVE:
++		if (info->nfmask == UINT32_MAX && info->ctmask == UINT32_MAX)
++			printf(" CONNAVASTMARK save");
++		else if (info->nfmask == info->ctmask)
++			printf(" CONNAVASTMARK save mask 0x%x", info->nfmask);
++		else
++			printf(" CONNAVASTMARK save nfmask 0x%x ctmask ~0x%x",
++			       info->nfmask, info->ctmask);
++		break;
++	case XT_CONNMARK_RESTORE:
++		if (info->ctmask == UINT32_MAX && info->nfmask == UINT32_MAX)
++			printf(" CONNAVASTMARK restore");
++		else if (info->ctmask == info->nfmask)
++			printf(" CONNAVASTMARK restore mask 0x%x", info->ctmask);
++		else
++			printf(" CONNAVASTMARK restore ctmask 0x%x nfmask ~0x%x",
++			       info->ctmask, info->nfmask);
++		break;
++
++	default:
++		printf(" ERROR: UNKNOWN CONNAVASTMARK MODE");
++		break;
++	}
++}
++
++static void CONNMARK_save(const void *ip, const struct xt_entry_target *target)
++{
++	const struct xt_connmark_target_info *markinfo =
++		(const struct xt_connmark_target_info *)target->data;
++
++	switch (markinfo->mode) {
++	case XT_CONNMARK_SET:
++	    printf(" --set-mark ");
++	    print_mark(markinfo->mark);
++	    print_mask("/", markinfo->mask);
++	    break;
++	case XT_CONNMARK_SAVE:
++	    printf(" --save-mark ");
++	    print_mask("--mask ", markinfo->mask);
++	    break;
++	case XT_CONNMARK_RESTORE:
++	    printf(" --restore-mark ");
++	    print_mask("--mask ", markinfo->mask);
++	    break;
++	default:
++	    printf(" ERROR: UNKNOWN CONNAVASTMARK MODE");
++	    break;
++	}
++}
++
++static void CONNMARK_init(struct xt_entry_target *t)
++{
++	struct xt_connmark_target_info *markinfo
++		= (struct xt_connmark_target_info *)t->data;
++
++	markinfo->mask = 0xffffffffUL;
++}
++
++static void
++connmark_tg_save(const void *ip, const struct xt_entry_target *target)
++{
++	const struct xt_connmark_tginfo1 *info = (const void *)target->data;
++
++	switch (info->mode) {
++	case XT_CONNMARK_SET:
++		printf(" --set-xmark 0x%x/0x%x", info->ctmark, info->ctmask);
++		break;
++	case XT_CONNMARK_SAVE:
++		printf(" --save-mark --nfmask 0x%x --ctmask 0x%x",
++		       info->nfmask, info->ctmask);
++		break;
++	case XT_CONNMARK_RESTORE:
++		printf(" --restore-mark --nfmask 0x%x --ctmask 0x%x",
++		       info->nfmask, info->ctmask);
++		break;
++	default:
++		printf(" ERROR: UNKNOWN CONNAVASTMARK MODE");
++		break;
++	}
++}
++
++static int connmark_tg_xlate(struct xt_xlate *xl,
++			     const struct xt_xlate_tg_params *params)
++{
++	const struct xt_connmark_tginfo1 *info =
++		(const void *)params->target->data;
++
++	switch (info->mode) {
++	case XT_CONNMARK_SET:
++		xt_xlate_add(xl, "ct avastmark set ");
++		if (info->ctmark == 0)
++			xt_xlate_add(xl, "ct avastmark and 0x%x", ~info->ctmask);
++		else if (info->ctmark == info->ctmask)
++			xt_xlate_add(xl, "ct avastmark or 0x%x",
++				     info->ctmark);
++		else if (info->ctmask == 0)
++			xt_xlate_add(xl, "ct avastmark xor 0x%x",
++				     info->ctmark);
++		else if (info->ctmask == 0xFFFFFFFFU)
++			xt_xlate_add(xl, "0x%x ", info->ctmark);
++		else
++			xt_xlate_add(xl, "ct avastmark xor 0x%x and 0x%x",
++				     info->ctmark, ~info->ctmask);
++		break;
++	case XT_CONNMARK_SAVE:
++		xt_xlate_add(xl, "ct avastmark set avastmark");
++		if (!(info->nfmask == UINT32_MAX &&
++		    info->ctmask == UINT32_MAX)) {
++			if (info->nfmask == info->ctmask)
++				xt_xlate_add(xl, " and 0x%x", info->nfmask);
++		}
++		break;
++	case XT_CONNMARK_RESTORE:
++		xt_xlate_add(xl, "meta avastmark set ct avastmark");
++		if (!(info->nfmask == UINT32_MAX &&
++		    info->ctmask == UINT32_MAX)) {
++			if (info->nfmask == info->ctmask)
++				xt_xlate_add(xl, " and 0x%x", info->nfmask);
++		}
++		break;
++	}
++
++	return 1;
++}
++
++static struct xtables_target connmark_tg_reg[] = {
++	{
++		.family        = NFPROTO_UNSPEC,
++		.name          = "CONNAVASTMARK",
++		.revision      = 0,
++		.version       = XTABLES_VERSION,
++		.size          = XT_ALIGN(sizeof(struct xt_connmark_target_info)),
++		.userspacesize = XT_ALIGN(sizeof(struct xt_connmark_target_info)),
++		.help          = CONNMARK_help,
++		.init          = CONNMARK_init,
++		.print         = CONNMARK_print,
++		.save          = CONNMARK_save,
++		.x6_parse      = CONNMARK_parse,
++		.x6_fcheck     = connmark_tg_check,
++		.x6_options    = CONNMARK_opts,
++	},
++	{
++		.version       = XTABLES_VERSION,
++		.name          = "CONNAVASTMARK",
++		.revision      = 1,
++		.family        = NFPROTO_UNSPEC,
++		.size          = XT_ALIGN(sizeof(struct xt_connmark_tginfo1)),
++		.userspacesize = XT_ALIGN(sizeof(struct xt_connmark_tginfo1)),
++		.help          = connmark_tg_help,
++		.init          = connmark_tg_init,
++		.print         = connmark_tg_print,
++		.save          = connmark_tg_save,
++		.x6_parse      = connmark_tg_parse,
++		.x6_fcheck     = connmark_tg_check,
++		.x6_options    = connmark_tg_opts,
++		.xlate	       = connmark_tg_xlate,
++	},
++};
++
++void _init(void)
++{
++	xtables_register_targets(connmark_tg_reg, ARRAY_SIZE(connmark_tg_reg));
++}
+diff --git a/extensions/libxt_CONNAVASTMARK.man b/extensions/libxt_CONNAVASTMARK.man
+new file mode 100644
+index 0000000..ec822ec
+--- /dev/null
++++ b/extensions/libxt_CONNAVASTMARK.man
+@@ -0,0 +1,53 @@
++This module sets the netfilter avastmark value associated with a connection.
++The avastmark is 32 bits wide.
++.TP
++\fB\-\-set\-xmark\fP \fIvalue\fP[\fB/\fP\fImask\fP]
++Zero out the bits given by \fImask\fP and XOR \fIvalue\fP into the ctmark.
++.TP
++\fB\-\-save\-mark\fP [\fB\-\-nfmask\fP \fInfmask\fP] [\fB\-\-ctmask\fP \fIctmask\fP]
++Copy the packet avastmark (nfmark) to the connection avastmark (ctmark)
++using the given masks. The new nfmark value is determined as follows:
++.IP
++ctmark = (ctmark & ~ctmask) ^ (nfmark & nfmask)
++.IP
++i.e. \fIctmask\fP defines what bits to clear and \fInfmask\fP what bits of the
++nfmark to XOR into the ctmark. \fIctmask\fP and \fInfmask\fP default to
++0xFFFFFFFF.
++.TP
++\fB\-\-restore\-mark\fP [\fB\-\-nfmask\fP \fInfmask\fP] [\fB\-\-ctmask\fP \fIctmask\fP]
++Copy the connection avastmark (ctmark) to the packet avastmark (nfmark)
++using the given masks. The new ctmark value is determined as follows:
++.IP
++nfmark = (nfmark & ~\fInfmask\fP) ^ (ctmark & \fIctmask\fP);
++.IP
++i.e. \fInfmask\fP defines what bits to clear and \fIctmask\fP what bits of the
++ctmark to XOR into the nfmark. \fIctmask\fP and \fInfmask\fP default to
++0xFFFFFFFF.
++.IP
++\fB\-\-restore\-mark\fP is only valid in the \fBmangle\fP table.
++.PP
++The following mnemonics are available for \fB\-\-set\-xmark\fP:
++.TP
++\fB\-\-and\-mark\fP \fIbits\fP
++Binary AND the ctmark with \fIbits\fP. (Mnemonic for \fB\-\-set\-xmark
++0/\fP\fIinvbits\fP, where \fIinvbits\fP is the binary negation of \fIbits\fP.)
++.TP
++\fB\-\-or\-mark\fP \fIbits\fP
++Binary OR the ctmark with \fIbits\fP. (Mnemonic for \fB\-\-set\-xmark\fP
++\fIbits\fP\fB/\fP\fIbits\fP.)
++.TP
++\fB\-\-xor\-mark\fP \fIbits\fP
++Binary XOR the ctmark with \fIbits\fP. (Mnemonic for \fB\-\-set\-xmark\fP
++\fIbits\fP\fB/0\fP.)
++.TP
++\fB\-\-set\-mark\fP \fIvalue\fP[\fB/\fP\fImask\fP]
++Set the connection avastmark. If a mask is specified then only those bits
++set in the mask are modified.
++.TP
++\fB\-\-save\-mark\fP [\fB\-\-mask\fP \fImask\fP]
++Copy the nfmark to the ctmark. If a mask is specified, only those bits are
++copied.
++.TP
++\fB\-\-restore\-mark\fP [\fB\-\-mask\fP \fImask\fP]
++Copy the ctmark to the nfmark. If a mask is specified, only those bits are
++copied. This is only valid in the \fBmangle\fP table.
+diff --git a/extensions/libxt_CONNAVASTMARK.t b/extensions/libxt_CONNAVASTMARK.t
+new file mode 100644
+index 0000000..75ddddc
+--- /dev/null
++++ b/extensions/libxt_CONNAVASTMARK.t
+@@ -0,0 +1,7 @@
++:PREROUTING,FORWARD,OUTPUT,POSTROUTING
++*mangle
++-j CONNAVASTMARK --restore-mark;=;OK
++-j CONNAVASTMARK --save-mark;=;OK
++-j CONNAVASTMARK --save-mark --nfmask 0xfffffff --ctmask 0xffffffff;-j CONNAVASTMARK --save-mark;OK
++-j CONNAVASTMARK --restore-mark --nfmask 0xfffffff --ctmask 0xffffffff;-j CONNAVASTMARK --restore-mark;OK
++-j CONNAVASTMARK;;FAIL
+diff --git a/extensions/libxt_CONNAVASTMARK.txlate b/extensions/libxt_CONNAVASTMARK.txlate
+new file mode 100644
+index 0000000..08569c0
+--- /dev/null
++++ b/extensions/libxt_CONNAVASTMARK.txlate
+@@ -0,0 +1,23 @@
++iptables-translate -t mangle -A PREROUTING -j CONNAVASTMARK --set-mark 0x16
++nft add rule ip mangle PREROUTING counter ct avastmark set 0x16
++
++iptables-translate -t mangle -A PREROUTING -j CONNAVASTMARK --set-xmark 0x16/0x12
++nft add rule ip mangle PREROUTING counter ct avastmark set ct avastmark xor 0x16 and 0xffffffed
++
++iptables-translate -t mangle -A PREROUTING -j CONNAVASTMARK --and-mark 0x16
++nft add rule ip mangle PREROUTING counter ct avastmark set ct avastmark and 0x16
++
++iptables-translate -t mangle -A PREROUTING -j CONNAVASTMARK --or-mark 0x16
++nft add rule ip mangle PREROUTING counter ct avastmark set ct avastmark or 0x16
++
++iptables-translate -t mangle -A PREROUTING -j CONNAVASTMARK --save-mark
++nft add rule ip mangle PREROUTING counter ct avastmark set avastmark
++
++iptables-translate -t mangle -A PREROUTING -j CONNAVASTMARK --save-mark --mask 0x12
++nft add rule ip mangle PREROUTING counter ct avastmark set avastmark and 0x12
++
++iptables-translate -t mangle -A PREROUTING -j CONNAVASTMARK --restore-mark
++nft add rule ip mangle PREROUTING counter meta avastmark set ct avastmark
++
++iptables-translate -t mangle -A PREROUTING -j CONNAVASTMARK --restore-mark --mask 0x12
++nft add rule ip mangle PREROUTING counter meta avastmark set ct avastmark and 0x12
+diff --git a/extensions/libxt_avastmark.c b/extensions/libxt_avastmark.c
+new file mode 100644
+index 0000000..bf78e89
+--- /dev/null
++++ b/extensions/libxt_avastmark.c
+@@ -0,0 +1,181 @@
++#include <stdbool.h>
++#include <stdio.h>
++#include <xtables.h>
++#include <linux/netfilter/xt_mark.h>
++
++struct xt_mark_info {
++	unsigned long mark, mask;
++	uint8_t invert;
++};
++
++enum {
++	O_MARK = 0,
++};
++
++static void mark_mt_help(void)
++{
++	printf(
++"avastmark match options:\n"
++"[!] --mark value[/mask]    Match nfmark value with optional mask\n");
++}
++
++static const struct xt_option_entry mark_mt_opts[] = {
++	{.name = "mark", .id = O_MARK, .type = XTTYPE_MARKMASK32,
++	 .flags = XTOPT_MAND | XTOPT_INVERT},
++	XTOPT_TABLEEND,
++};
++
++static void mark_mt_parse(struct xt_option_call *cb)
++{
++	struct xt_mark_mtinfo1 *info = cb->data;
++
++	xtables_option_parse(cb);
++	if (cb->invert)
++		info->invert = true;
++	info->mark = cb->val.mark;
++	info->mask = cb->val.mask;
++}
++
++static void mark_parse(struct xt_option_call *cb)
++{
++	struct xt_mark_info *markinfo = cb->data;
++
++	xtables_option_parse(cb);
++	if (cb->invert)
++		markinfo->invert = 1;
++	markinfo->mark = cb->val.mark;
++	markinfo->mask = cb->val.mask;
++}
++
++static void print_mark(unsigned int mark, unsigned int mask)
++{
++	if (mask != 0xffffffffU)
++		printf(" 0x%x/0x%x", mark, mask);
++	else
++		printf(" 0x%x", mark);
++}
++
++static void
++mark_mt_print(const void *ip, const struct xt_entry_match *match, int numeric)
++{
++	const struct xt_mark_mtinfo1 *info = (const void *)match->data;
++
++	printf(" avastmark match");
++	if (info->invert)
++		printf(" !");
++	print_mark(info->mark, info->mask);
++}
++
++static void
++mark_print(const void *ip, const struct xt_entry_match *match, int numeric)
++{
++	const struct xt_mark_info *info = (const void *)match->data;
++
++	printf(" AVASTMARK match");
++
++	if (info->invert)
++		printf(" !");
++
++	print_mark(info->mark, info->mask);
++}
++
++static void mark_mt_save(const void *ip, const struct xt_entry_match *match)
++{
++	const struct xt_mark_mtinfo1 *info = (const void *)match->data;
++
++	if (info->invert)
++		printf(" !");
++
++	printf(" --mark");
++	print_mark(info->mark, info->mask);
++}
++
++static void
++mark_save(const void *ip, const struct xt_entry_match *match)
++{
++	const struct xt_mark_info *info = (const void *)match->data;
++
++	if (info->invert)
++		printf(" !");
++
++	printf(" --mark");
++	print_mark(info->mark, info->mask);
++}
++
++static void
++print_mark_xlate(struct xt_xlate *xl, unsigned int mark,
++		 unsigned int mask, uint32_t op)
++{
++	if (mask != 0xffffffffU)
++		xt_xlate_add(xl, " and 0x%x %s 0x%x", mask,
++			   op == XT_OP_EQ ? "==" : "!=", mark);
++	else
++		xt_xlate_add(xl, " %s0x%x",
++			   op == XT_OP_EQ ? "" : "!= ", mark);
++}
++
++static int mark_mt_xlate(struct xt_xlate *xl,
++			 const struct xt_xlate_mt_params *params)
++{
++	const struct xt_mark_mtinfo1 *info = (const void *)params->match->data;
++	enum xt_op op = XT_OP_EQ;
++
++	if (info->invert)
++		op = XT_OP_NEQ;
++
++	xt_xlate_add(xl, "avastmark");
++	print_mark_xlate(xl, info->mark, info->mask, op);
++
++	return 1;
++}
++
++static int mark_xlate(struct xt_xlate *xl,
++		      const struct xt_xlate_mt_params *params)
++{
++	const struct xt_mark_info *info = (const void *)params->match->data;
++	enum xt_op op = XT_OP_EQ;
++
++	if (info->invert)
++		op = XT_OP_NEQ;
++
++	xt_xlate_add(xl, "avastmark");
++	print_mark_xlate(xl, info->mark, info->mask, op);
++
++	return 1;
++}
++
++static struct xtables_match mark_mt_reg[] = {
++	{
++		.family        = NFPROTO_UNSPEC,
++		.name          = "avastmark",
++		.revision      = 0,
++		.version       = XTABLES_VERSION,
++		.size          = XT_ALIGN(sizeof(struct xt_mark_info)),
++		.userspacesize = XT_ALIGN(sizeof(struct xt_mark_info)),
++		.help          = mark_mt_help,
++		.print         = mark_print,
++		.save          = mark_save,
++		.x6_parse      = mark_parse,
++		.x6_options    = mark_mt_opts,
++		.xlate	       = mark_xlate,
++	},
++	{
++		.version       = XTABLES_VERSION,
++		.name          = "avastmark",
++		.revision      = 1,
++		.family        = NFPROTO_UNSPEC,
++		.size          = XT_ALIGN(sizeof(struct xt_mark_mtinfo1)),
++		.userspacesize = XT_ALIGN(sizeof(struct xt_mark_mtinfo1)),
++		.help          = mark_mt_help,
++		.print         = mark_mt_print,
++		.save          = mark_mt_save,
++		.x6_parse      = mark_mt_parse,
++		.x6_options    = mark_mt_opts,
++		.xlate	       = mark_mt_xlate,
++	},
++};
++
++void _init(void)
++{
++	xtables_register_matches(mark_mt_reg, ARRAY_SIZE(mark_mt_reg));
++}
+diff --git a/extensions/libxt_avastmark.man b/extensions/libxt_avastmark.man
+new file mode 100644
+index 0000000..5a79d78
+--- /dev/null
++++ b/extensions/libxt_avastmark.man
+@@ -0,0 +1,9 @@
++This module matches the netfilter avastmark field associated with a packet
++(which can be set using the
++.B AVASTMARK
++target below).
++.TP
++[\fB!\fP] \fB\-\-mark\fP \fIvalue\fP[\fB/\fP\fImask\fP]
++Matches packets with the given unsigned mark value (if a \fImask\fP is
++specified, this is logically ANDed with the \fImask\fP before the
++comparison).
+diff --git a/extensions/libxt_avastmark.t b/extensions/libxt_avastmark.t
+new file mode 100644
+index 0000000..399dbb5
+--- /dev/null
++++ b/extensions/libxt_avastmark.t
+@@ -0,0 +1,7 @@
++:INPUT,FORWARD,OUTPUT
++-m avastmark --mark 0xfeedcafe/0xfeedcafe;=;OK
++-m avastmark --mark 0;=;OK
++-m avastmark --mark 4294967295;-m avastmark --mark 0xffffffff;OK
++-m avastmark --mark 4294967296;;FAIL
++-m avastmark --mark -1;;FAIL
++-m avastmark;;FAIL
+diff --git a/extensions/libxt_avastmark.txlate b/extensions/libxt_avastmark.txlate
+new file mode 100644
+index 0000000..257216a
+--- /dev/null
++++ b/extensions/libxt_avastmark.txlate
+@@ -0,0 +1,5 @@
++iptables-translate -I INPUT -p tcp -m avastmark ! --mark 0xa/0xa
++nft insert rule ip filter INPUT ip protocol tcp avastmark and 0xa != 0xa counter
++
++iptables-translate -I INPUT -p tcp -m avastmark ! --mark 0x1
++nft insert rule ip filter INPUT ip protocol tcp avastmark != 0x1 counter
+diff --git a/extensions/libxt_connavastmark.c b/extensions/libxt_connavastmark.c
+new file mode 100644
+index 0000000..6db7bb0
+--- /dev/null
++++ b/extensions/libxt_connavastmark.c
+@@ -0,0 +1,203 @@
++/* Shared library add-on to iptables to add connmark matching support.
++ *
++ * (C) 2002,2004 MARA Systems AB <http://www.marasystems.com>
++ * by Henrik Nordstrom <hno@marasystems.com>
++ *
++ * Version 1.1
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
++ */
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <xtables.h>
++#include <linux/netfilter/xt_connmark.h>
++
++struct xt_connmark_info {
++	unsigned long mark, mask;
++	uint8_t invert;
++};
++
++enum {
++	O_MARK = 0,
++};
++
++static void connmark_mt_help(void)
++{
++	printf(
++"connavastmark match options:\n"
++"[!] --mark value[/mask]    Match ctmark value with optional mask\n");
++}
++
++static const struct xt_option_entry connmark_mt_opts[] = {
++	{.name = "mark", .id = O_MARK, .type = XTTYPE_MARKMASK32,
++	 .flags = XTOPT_MAND | XTOPT_INVERT},
++	XTOPT_TABLEEND,
++};
++
++static void connmark_mt_parse(struct xt_option_call *cb)
++{
++	struct xt_connmark_mtinfo1 *info = cb->data;
++
++	xtables_option_parse(cb);
++	if (cb->invert)
++		info->invert = true;
++	info->mark = cb->val.mark;
++	info->mask = cb->val.mask;
++}
++
++static void connmark_parse(struct xt_option_call *cb)
++{
++	struct xt_connmark_info *markinfo = cb->data;
++
++	xtables_option_parse(cb);
++	markinfo->mark = cb->val.mark;
++	markinfo->mask = cb->val.mask;
++	if (cb->invert)
++		markinfo->invert = 1;
++}
++
++static void print_mark(unsigned int mark, unsigned int mask)
++{
++	if (mask != 0xffffffffU)
++		printf(" 0x%x/0x%x", mark, mask);
++	else
++		printf(" 0x%x", mark);
++}
++
++static void
++connmark_print(const void *ip, const struct xt_entry_match *match, int numeric)
++{
++	const struct xt_connmark_info *info = (const void *)match->data;
++
++	printf(" CONNAVASTMARK match ");
++	if (info->invert)
++		printf("!");
++	print_mark(info->mark, info->mask);
++}
++
++static void
++connmark_mt_print(const void *ip, const struct xt_entry_match *match,
++		  int numeric)
++{
++	const struct xt_connmark_mtinfo1 *info = (const void *)match->data;
++
++	printf(" connavastmark match ");
++	if (info->invert)
++		printf("!");
++	print_mark(info->mark, info->mask);
++}
++
++static void connmark_save(const void *ip, const struct xt_entry_match *match)
++{
++	const struct xt_connmark_info *info = (const void *)match->data;
++
++	if (info->invert)
++		printf(" !");
++
++	printf(" --mark");
++	print_mark(info->mark, info->mask);
++}
++
++static void
++connmark_mt_save(const void *ip, const struct xt_entry_match *match)
++{
++	const struct xt_connmark_mtinfo1 *info = (const void *)match->data;
++
++	if (info->invert)
++		printf(" !");
++
++	printf(" --mark");
++	print_mark(info->mark, info->mask);
++}
++
++static void print_mark_xlate(unsigned int mark, unsigned int mask,
++			     struct xt_xlate *xl, uint32_t op)
++{
++	if (mask != 0xffffffffU)
++		xt_xlate_add(xl, " and 0x%x %s 0x%x", mask,
++			   op == XT_OP_EQ ? "==" : "!=", mark);
++	else
++		xt_xlate_add(xl, " %s0x%x",
++			   op == XT_OP_EQ ? "" : "!= ", mark);
++}
++
++static int connmark_xlate(struct xt_xlate *xl,
++			  const struct xt_xlate_mt_params *params)
++{
++	const struct xt_connmark_info *info = (const void *)params->match->data;
++	enum xt_op op = XT_OP_EQ;
++
++	if (info->invert)
++		op = XT_OP_NEQ;
++
++	xt_xlate_add(xl, "ct avastmark");
++	print_mark_xlate(info->mark, info->mask, xl, op);
++
++	return 1;
++}
++
++static int
++connmark_mt_xlate(struct xt_xlate *xl,
++		  const struct xt_xlate_mt_params *params)
++{
++	const struct xt_connmark_mtinfo1 *info =
++		(const void *)params->match->data;
++	enum xt_op op = XT_OP_EQ;
++
++	if (info->invert)
++		op = XT_OP_NEQ;
++
++	xt_xlate_add(xl, "ct avastmark");
++	print_mark_xlate(info->mark, info->mask, xl, op);
++
++	return 1;
++}
++
++static struct xtables_match connmark_mt_reg[] = {
++	{
++		.family        = NFPROTO_UNSPEC,
++		.name          = "connavastmark",
++		.revision      = 0,
++		.version       = XTABLES_VERSION,
++		.size          = XT_ALIGN(sizeof(struct xt_connmark_info)),
++		.userspacesize = XT_ALIGN(sizeof(struct xt_connmark_info)),
++		.help          = connmark_mt_help,
++		.print         = connmark_print,
++		.save          = connmark_save,
++		.x6_parse      = connmark_parse,
++		.x6_options    = connmark_mt_opts,
++		.xlate	       = connmark_xlate,
++	},
++	{
++		.version       = XTABLES_VERSION,
++		.name          = "connavastmark",
++		.revision      = 1,
++		.family        = NFPROTO_UNSPEC,
++		.size          = XT_ALIGN(sizeof(struct xt_connmark_mtinfo1)),
++		.userspacesize = XT_ALIGN(sizeof(struct xt_connmark_mtinfo1)),
++		.help          = connmark_mt_help,
++		.print         = connmark_mt_print,
++		.save          = connmark_mt_save,
++		.x6_parse      = connmark_mt_parse,
++		.x6_options    = connmark_mt_opts,
++		.xlate	       = connmark_mt_xlate,
++	},
++};
++
++void _init(void)
++{
++	xtables_register_matches(connmark_mt_reg, ARRAY_SIZE(connmark_mt_reg));
++}
+diff --git a/extensions/libxt_connavastmark.man b/extensions/libxt_connavastmark.man
+new file mode 100644
+index 0000000..b727187
+--- /dev/null
++++ b/extensions/libxt_connavastmark.man
+@@ -0,0 +1,6 @@
++This module matches the netfilter avastmark field associated with a
++connection (which can be set using the \fBCONNAVASTMARK\fP target below).
++.TP
++[\fB!\fP] \fB\-\-mark\fP \fIvalue\fP[\fB/\fP\fImask\fP]
++Matches packets in connections with the given mark value (if a mask is
++specified, this is logically ANDed with the mark before the comparison).
+diff --git a/extensions/libxt_connavastmark.t b/extensions/libxt_connavastmark.t
+new file mode 100644
+index 0000000..5af1924
+--- /dev/null
++++ b/extensions/libxt_connavastmark.t
+@@ -0,0 +1,9 @@
++:PREROUTING,FORWARD,OUTPUT,POSTROUTING
++*mangle
++-m connavastmark --mark 0xffffffff;=;OK
++-m connavastmark --mark 0xffffffff/0xffffffff;-m connavastmark --mark 0xffffffff;OK
++-m connavastmark --mark 0xffffffff/0;=;OK
++-m connavastmark --mark 0/0xffffffff;-m connavastmark --mark 0;OK
++-m connavastmark --mark -1;;FAIL
++-m connavastmark --mark 0xfffffffff;;FAIL
++-m connavastmark;;FAIL
+diff --git a/extensions/libxt_connavastmark.txlate b/extensions/libxt_connavastmark.txlate
+new file mode 100644
+index 0000000..1c53a9b
+--- /dev/null
++++ b/extensions/libxt_connavastmark.txlate
+@@ -0,0 +1,14 @@
++iptables-translate -A INPUT -m connavastmark --mark 2 -j ACCEPT
++nft add rule ip filter INPUT ct avastmark 0x2 counter accept
++
++iptables-translate -A INPUT -m connavastmark ! --mark 2 -j ACCEPT
++nft add rule ip filter INPUT ct avastmark != 0x2 counter accept
++
++iptables-translate -A INPUT -m connavastmark --mark 10/10 -j ACCEPT
++nft add rule ip filter INPUT ct avastmark and 0xa == 0xa counter accept
++
++iptables-translate -A INPUT -m connavastmark ! --mark 10/10 -j ACCEPT
++nft add rule ip filter INPUT ct avastmark and 0xa != 0xa counter accept
++
++iptables-translate -t mangle -A PREROUTING -p tcp --dport 40 -m connavastmark --mark 0x40
++nft add rule ip mangle PREROUTING tcp dport 40 ct avastmark 0x40 counter

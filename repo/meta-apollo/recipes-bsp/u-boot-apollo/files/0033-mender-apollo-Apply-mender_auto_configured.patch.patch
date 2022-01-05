@@ -1,0 +1,123 @@
+From fce80f9614b8497b211326eae794dc8e18718804 Mon Sep 17 00:00:00 2001
+From: Carlo Caione <ccaione@baylibre.com>
+Date: Wed, 14 Nov 2018 18:47:34 +0000
+Subject: [PATCH 33/55] mender: apollo: Apply mender_auto_configured.patch
+
+This patch (applied) is the result of the automatic patching done by the
+meta-mender layer on U-Boot when MENDER_UBOOT_AUTO_CONFIGURE is set.
+
+It tries to fix the current configuration (defconfig / includes) with
+the correct settings.
+
+Signed-off-by: Carlo Caione <ccaione@baylibre.com>
+---
+ configs/apollo_defconfig        | 8 ++++++--
+ include/config_defaults.h       | 5 +++++
+ include/config_distro_bootcmd.h | 1 -
+ include/configs/apollo.h        | 6 +-----
+ include/configs/meson64.h       | 3 +--
+ 5 files changed, 13 insertions(+), 10 deletions(-)
+
+diff --git a/configs/apollo_defconfig b/configs/apollo_defconfig
+index 3c4deecfa2..c1721eea13 100644
+--- a/configs/apollo_defconfig
++++ b/configs/apollo_defconfig
+@@ -9,7 +9,6 @@ CONFIG_IDENT_STRING=" apollo"
+ CONFIG_DEBUG_UART=y
+ CONFIG_NR_DRAM_BANKS=1
+ CONFIG_OF_BOARD_SETUP=y
+-CONFIG_BOOTCOMMAND="run check_env; run distro_bootcmd"
+ CONFIG_MISC_INIT_R=y
+ # CONFIG_DISPLAY_CPUINFO is not set
+ # CONFIG_DISPLAY_BOARDINFO is not set
+@@ -22,7 +21,6 @@ CONFIG_CMD_MMC=y
+ CONFIG_CMD_REGULATOR=y
+ CONFIG_OF_CONTROL=y
+ CONFIG_DEFAULT_DEVICE_TREE="meson-axg-apollo-evt0"
+-CONFIG_ENV_IS_IN_MMC=y
+ CONFIG_NET_RANDOM_ETHADDR=y
+ CONFIG_DM_GPIO=y
+ CONFIG_DM_MMC=y
+@@ -39,3 +37,9 @@ CONFIG_DEBUG_UART_ANNOUNCE=y
+ CONFIG_DEBUG_UART_SKIP_INIT=y
+ CONFIG_MESON_SERIAL=y
+ CONFIG_OF_LIBFDT_OVERLAY=y
++CONFIG_MMC=y
++CONFIG_ENV_IS_IN_MMC=y
++CONFIG_CMD_EXT4=y
++CONFIG_CMD_FS_GENERIC=y
++CONFIG_BOOTCOUNT_LIMIT=y
++CONFIG_BOOTCOUNT_ENV=y
+diff --git a/include/config_defaults.h b/include/config_defaults.h
+index 7ef928bbe1..39aa8435ac 100644
+--- a/include/config_defaults.h
++++ b/include/config_defaults.h
+@@ -20,3 +20,8 @@
+ #define CONFIG_ZLIB 1
+ 
+ #endif
++#define CONFIG_ENV_SIZE 0x2000
++#define CONFIG_ENV_OFFSET 0x0
++#define CONFIG_ENV_OFFSET_REDUND 0x800000
++#define CONFIG_SYS_MMC_ENV_DEV 0
++#define CONFIG_SYS_MMC_ENV_PART 0
+diff --git a/include/config_distro_bootcmd.h b/include/config_distro_bootcmd.h
+index d672e8ebe6..5ff5b8c3eb 100644
+--- a/include/config_distro_bootcmd.h
++++ b/include/config_distro_bootcmd.h
+@@ -410,7 +410,6 @@
+ 		"done\0"
+ 
+ #ifndef CONFIG_BOOTCOMMAND
+-#define CONFIG_BOOTCOMMAND "run distro_bootcmd"
+ #endif
+ 
+ #endif  /* _CONFIG_CMD_DISTRO_BOOTCMD_H */
+diff --git a/include/configs/apollo.h b/include/configs/apollo.h
+index c40e3a2964..e25f5ce901 100644
+--- a/include/configs/apollo.h
++++ b/include/configs/apollo.h
+@@ -9,10 +9,6 @@
+ #ifndef __CONFIG_H
+ #define __CONFIG_H
+ 
+-#define CONFIG_ENV_SIZE			0x2000
+-#define CONFIG_SYS_MMC_ENV_DEV		0
+-#define CONFIG_SYS_MMC_ENV_PART		1
+-#define CONFIG_ENV_OFFSET		0
+ 
+ #define BOOT_TARGET_DEVICES(func) \
+ 	func(ROMUSB, romusb, na) \
+@@ -29,7 +25,7 @@
+ #define CONFIG_EXTRA_ENV_SETTINGS \
+ 	"fdt_addr_r=0x08008000\0" \
+ 	"scriptaddr=0x08000000\0" \
+-	"kernel_addr_r=0x08080000\0" \
++	"loadaddr=0x08080000\0" \
+ 	"pxefile_addr_r=0x01080000\0" \
+ 	"ramdisk_addr_r=0x13000000\0" \
+ 	"fdtfile=amlogic/" CONFIG_DEFAULT_DEVICE_TREE ".dtb\0" \
+diff --git a/include/configs/meson64.h b/include/configs/meson64.h
+index 7066b9e627..63660aaa56 100644
+--- a/include/configs/meson64.h
++++ b/include/configs/meson64.h
+@@ -18,7 +18,6 @@
+ 
+ #define CONFIG_CPU_ARMV8
+ #define CONFIG_REMAKE_ELF
+-#define CONFIG_ENV_SIZE			0x2000
+ #define CONFIG_SYS_MAXARGS		32
+ #define CONFIG_SYS_MALLOC_LEN		(32 << 20)
+ #define CONFIG_SYS_CBSIZE		1024
+@@ -60,7 +59,7 @@
+ #define CONFIG_EXTRA_ENV_SETTINGS \
+ 	"fdt_addr_r=0x08008000\0" \
+ 	"scriptaddr=0x08000000\0" \
+-	"kernel_addr_r=0x08080000\0" \
++	"loadaddr=0x08080000\0" \
+ 	"pxefile_addr_r=0x01080000\0" \
+ 	"ramdisk_addr_r=0x13000000\0" \
+ 	"fdtfile=amlogic/" CONFIG_DEFAULT_DEVICE_TREE ".dtb\0" \
+-- 
+2.19.1
+

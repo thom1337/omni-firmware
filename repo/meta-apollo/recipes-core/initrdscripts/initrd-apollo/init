@@ -1,0 +1,57 @@
+#!/bin/sh
+
+green_led() {
+	echo 0 > /sys/class/leds/apollo:app1/brightness
+	echo 0 > /sys/class/leds/apollo:app2/brightness
+	echo 250 > /sys/class/leds/apollo:power/brightness
+}
+
+get_last_char() {
+	ret=$1
+	while [ "${#ret}" != "1" ]; do
+		ret=${ret#?}
+	done
+	echo $ret
+}
+
+export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+
+ROOTFS_DEV=/dev/mmcblk1p1
+
+mkdir /proc
+mkdir /sys
+mkdir /run
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs none /dev
+mount -t tmpfs -o mode=755,nodev tmpfs /run
+
+green_led
+
+for PARAM in $(cat /proc/cmdline)
+do
+	NAME=$(echo $PARAM | cut -d"=" -f1)
+
+	if [ "$NAME" = "root" ]
+	then
+		ROOTFS_DEV=$(echo $PARAM | sed -e "s/^root=//")
+	fi
+done
+
+ROOT_PART_NO=$(get_last_char $ROOTFS_DEV)
+OVERLAY_PART_NO=$((ROOT_PART_NO + 4))
+
+ROOT_DISK=${ROOTFS_DEV%p?}
+OVERLAY_DEV=${ROOT_DISK}p${OVERLAY_PART_NO}
+
+udevd --daemon
+udevadm trigger
+udevadm settle
+
+mkdir -p /lower /overlay /merged
+mount -o noatime $ROOTFS_DEV /lower
+mount -o noatime $OVERLAY_DEV /overlay
+mkdir -p /overlay/upper /overlay/work
+mount -t overlay overlay -o noatime,lowerdir=/lower,upperdir=/overlay/upper,workdir=/overlay/work /merged
+
+exec switch_root /merged /sbin/init

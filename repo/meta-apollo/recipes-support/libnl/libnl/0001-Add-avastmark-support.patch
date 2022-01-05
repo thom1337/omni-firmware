@@ -1,0 +1,558 @@
+From 94eb6c47ccd559a4619f5e3f58b8f8c83105a8b3 Mon Sep 17 00:00:00 2001
+From: Vladyslav Movchan <vladyslav.movchan@avast.com>
+Date: Thu, 24 Sep 2020 13:47:13 +0200
+Subject: [PATCH] Add avastmark support
+
+---
+ .../linux/netfilter/nfnetlink_conntrack.h     |  2 ++
+ .../linux/netfilter/nfnetlink_log.h           |  1 +
+ .../linux/netfilter/nfnetlink_queue.h         |  1 +
+ include/netlink-private/types.h               |  3 +++
+ include/netlink/cli/ct.h                      |  1 +
+ include/netlink/netfilter/ct.h                |  4 ++++
+ include/netlink/netfilter/log_msg.h           |  4 ++++
+ include/netlink/netfilter/queue_msg.h         |  4 ++++
+ lib/netfilter/ct.c                            |  6 +++++
+ lib/netfilter/ct_obj.c                        | 22 +++++++++++++++++++
+ lib/netfilter/log_msg.c                       |  5 +++++
+ lib/netfilter/log_msg_obj.c                   | 20 +++++++++++++++++
+ lib/netfilter/queue_msg.c                     | 10 +++++++++
+ lib/netfilter/queue_msg_obj.c                 | 21 ++++++++++++++++++
+ libnl-cli-3.sym                               |  1 +
+ libnl-nf-3.sym                                |  7 ++++++
+ src/lib/ct.c                                  |  6 +++++
+ src/nf-ct-add.c                               |  4 ++++
+ src/nf-ct-list.c                              |  4 ++++
+ 19 files changed, 126 insertions(+)
+
+diff --git a/include/linux-private/linux/netfilter/nfnetlink_conntrack.h b/include/linux-private/linux/netfilter/nfnetlink_conntrack.h
+index 1d41810..2581c29 100644
+--- a/include/linux-private/linux/netfilter/nfnetlink_conntrack.h
++++ b/include/linux-private/linux/netfilter/nfnetlink_conntrack.h
+@@ -55,6 +55,8 @@ enum ctattr_type {
+ 	CTA_LABELS,
+ 	CTA_LABELS_MASK,
+ 	CTA_SYNPROXY,
++	CTA_AVASTMARK,
++	CTA_AVASTMARK_MASK,
+ 	__CTA_MAX
+ };
+ #define CTA_MAX (__CTA_MAX - 1)
+diff --git a/include/linux-private/linux/netfilter/nfnetlink_log.h b/include/linux-private/linux/netfilter/nfnetlink_log.h
+index 20983cb..2b1c2b4 100644
+--- a/include/linux-private/linux/netfilter/nfnetlink_log.h
++++ b/include/linux-private/linux/netfilter/nfnetlink_log.h
+@@ -54,6 +54,7 @@ enum nfulnl_attr_type {
+ 	NFULA_HWLEN,			/* hardware header length */
+ 	NFULA_CT,                       /* nf_conntrack_netlink.h */
+ 	NFULA_CT_INFO,                  /* enum ip_conntrack_info */
++	NFULA_AVASTMARK,		/* __u32 nfmark */
+ 
+ 	__NFULA_MAX
+ };
+diff --git a/include/linux-private/linux/netfilter/nfnetlink_queue.h b/include/linux-private/linux/netfilter/nfnetlink_queue.h
+index bcb2cb5..c5b2912 100644
+--- a/include/linux-private/linux/netfilter/nfnetlink_queue.h
++++ b/include/linux-private/linux/netfilter/nfnetlink_queue.h
+@@ -61,6 +61,7 @@ enum nfqnl_attr_type {
+ 	NFQA_SECCTX,			/* security context string */
+ 	NFQA_VLAN,			/* nested attribute: packet vlan info */
+ 	NFQA_L2HDR,			/* full L2 header */
++	NFQA_AVASTMARK,			/* __u32 nfmark */
+ 
+ 	__NFQA_MAX
+ };
+diff --git a/include/netlink-private/types.h b/include/netlink-private/types.h
+index 97af3e5..65fa895 100644
+--- a/include/netlink-private/types.h
++++ b/include/netlink-private/types.h
+@@ -927,6 +927,7 @@ struct nfnl_ct {
+ 	uint32_t		ct_status_mask;
+ 	uint32_t		ct_timeout;
+ 	uint32_t		ct_mark;
++	uint32_t		ct_avastmark;
+ 	uint32_t		ct_use;
+ 	uint32_t		ct_id;
+ 	uint16_t		ct_zone;
+@@ -1001,6 +1002,7 @@ struct nfnl_log_msg {
+ 	uint8_t			log_msg_hook;
+ 	uint16_t		log_msg_hwproto;
+ 	uint32_t		log_msg_mark;
++	uint32_t		log_msg_avastmark;
+ 	struct timeval		log_msg_timestamp;
+ 	uint32_t		log_msg_indev;
+ 	uint32_t		log_msg_outdev;
+@@ -1035,6 +1037,7 @@ struct nfnl_queue_msg {
+ 	uint16_t		queue_msg_hwproto;
+ 	uint32_t		queue_msg_packetid;
+ 	uint32_t		queue_msg_mark;
++	uint32_t		queue_msg_avastmark;
+ 	struct timeval		queue_msg_timestamp;
+ 	uint32_t		queue_msg_indev;
+ 	uint32_t		queue_msg_outdev;
+diff --git a/include/netlink/cli/ct.h b/include/netlink/cli/ct.h
+index ebe7c9d..636a165 100644
+--- a/include/netlink/cli/ct.h
++++ b/include/netlink/cli/ct.h
+@@ -21,6 +21,7 @@ extern struct nl_cache *nl_cli_ct_alloc_cache(struct nl_sock *);
+ extern void nl_cli_ct_parse_family(struct nfnl_ct *, char *);
+ extern void nl_cli_ct_parse_protocol(struct nfnl_ct *, char *);
+ extern void nl_cli_ct_parse_mark(struct nfnl_ct *, char *);
++extern void nl_cli_ct_parse_avastmark(struct nfnl_ct *, char *);
+ extern void nl_cli_ct_parse_timeout(struct nfnl_ct *, char *);
+ extern void nl_cli_ct_parse_id(struct nfnl_ct *, char *);
+ extern void nl_cli_ct_parse_use(struct nfnl_ct *, char *);
+diff --git a/include/netlink/netfilter/ct.h b/include/netlink/netfilter/ct.h
+index ef5d035..78cd65e 100644
+--- a/include/netlink/netfilter/ct.h
++++ b/include/netlink/netfilter/ct.h
+@@ -83,6 +83,10 @@ extern void	nfnl_ct_set_mark(struct nfnl_ct *, uint32_t);
+ extern int	nfnl_ct_test_mark(const struct nfnl_ct *);
+ extern uint32_t	nfnl_ct_get_mark(const struct nfnl_ct *);
+ 
++extern void	nfnl_ct_set_avastmark(struct nfnl_ct *, uint32_t);
++extern int	nfnl_ct_test_avastmark(const struct nfnl_ct *);
++extern uint32_t	nfnl_ct_get_avastmark(const struct nfnl_ct *);
++
+ extern void	nfnl_ct_set_use(struct nfnl_ct *, uint32_t);
+ extern int	nfnl_ct_test_use(const struct nfnl_ct *);
+ extern uint32_t	nfnl_ct_get_use(const struct nfnl_ct *);
+diff --git a/include/netlink/netfilter/log_msg.h b/include/netlink/netfilter/log_msg.h
+index 63b0f64..d716586 100644
+--- a/include/netlink/netfilter/log_msg.h
++++ b/include/netlink/netfilter/log_msg.h
+@@ -49,6 +49,10 @@ extern void		nfnl_log_msg_set_mark(struct nfnl_log_msg *, uint32_t);
+ extern int		nfnl_log_msg_test_mark(const struct nfnl_log_msg *);
+ extern uint32_t		nfnl_log_msg_get_mark(const struct nfnl_log_msg *);
+ 
++extern void		nfnl_log_msg_set_avastmark(struct nfnl_log_msg *, uint32_t);
++extern int		nfnl_log_msg_test_avastmark(const struct nfnl_log_msg *);
++extern uint32_t		nfnl_log_msg_get_avastmark(const struct nfnl_log_msg *);
++
+ extern void		nfnl_log_msg_set_timestamp(struct nfnl_log_msg *,
+ 					       struct timeval *);
+ extern const struct timeval *nfnl_log_msg_get_timestamp(const struct nfnl_log_msg *);
+diff --git a/include/netlink/netfilter/queue_msg.h b/include/netlink/netfilter/queue_msg.h
+index 86f4b86..2325c75 100644
+--- a/include/netlink/netfilter/queue_msg.h
++++ b/include/netlink/netfilter/queue_msg.h
+@@ -56,6 +56,10 @@ extern void			nfnl_queue_msg_set_mark(struct nfnl_queue_msg *, uint32_t);
+ extern int			nfnl_queue_msg_test_mark(const struct nfnl_queue_msg *);
+ extern uint32_t			nfnl_queue_msg_get_mark(const struct nfnl_queue_msg *);
+ 
++extern void			nfnl_queue_msg_set_avastmark(struct nfnl_queue_msg *, uint32_t);
++extern int			nfnl_queue_msg_test_avastmark(const struct nfnl_queue_msg *);
++extern uint32_t			nfnl_queue_msg_get_avastmark(const struct nfnl_queue_msg *);
++
+ extern void			nfnl_queue_msg_set_timestamp(struct nfnl_queue_msg *,
+ 							      struct timeval *);
+ extern int			nfnl_queue_msg_test_timestamp(const struct nfnl_queue_msg *);
+diff --git a/lib/netfilter/ct.c b/lib/netfilter/ct.c
+index 98aaafc..4f7af47 100644
+--- a/lib/netfilter/ct.c
++++ b/lib/netfilter/ct.c
+@@ -42,6 +42,7 @@ static struct nla_policy ct_policy[CTA_MAX+1] = {
+ 	//[CTA_NAT_SRC]
+ 	[CTA_TIMEOUT]		= { .type = NLA_U32 },
+ 	[CTA_MARK]		= { .type = NLA_U32 },
++	[CTA_AVASTMARK]		= { .type = NLA_U32 },
+ 	[CTA_COUNTERS_ORIG]	= { .type = NLA_NESTED },
+ 	[CTA_COUNTERS_REPLY]	= { .type = NLA_NESTED },
+ 	[CTA_USE]		= { .type = NLA_U32 },
+@@ -357,6 +358,8 @@ int nfnlmsg_ct_parse(struct nlmsghdr *nlh, struct nfnl_ct **result)
+ 		nfnl_ct_set_timeout(ct, ntohl(nla_get_u32(tb[CTA_TIMEOUT])));
+ 	if (tb[CTA_MARK])
+ 		nfnl_ct_set_mark(ct, ntohl(nla_get_u32(tb[CTA_MARK])));
++	if (tb[CTA_AVASTMARK])
++		nfnl_ct_set_avastmark(ct, ntohl(nla_get_u32(tb[CTA_AVASTMARK])));
+ 	if (tb[CTA_USE])
+ 		nfnl_ct_set_use(ct, ntohl(nla_get_u32(tb[CTA_USE])));
+ 	if (tb[CTA_ID])
+@@ -532,6 +535,9 @@ static int nfnl_ct_build_message(const struct nfnl_ct *ct, int cmd, int flags,
+ 	if (nfnl_ct_test_mark(ct))
+ 		NLA_PUT_U32(msg, CTA_MARK, htonl(nfnl_ct_get_mark(ct)));
+ 
++	if (nfnl_ct_test_avastmark(ct))
++		NLA_PUT_U32(msg, CTA_AVASTMARK, htonl(nfnl_ct_get_avastmark(ct)));
++
+ 	if (nfnl_ct_test_id(ct))
+ 		NLA_PUT_U32(msg, CTA_ID, htonl(nfnl_ct_get_id(ct)));
+ 
+diff --git a/lib/netfilter/ct_obj.c b/lib/netfilter/ct_obj.c
+index 08aa945..3cab4c4 100644
+--- a/lib/netfilter/ct_obj.c
++++ b/lib/netfilter/ct_obj.c
+@@ -54,6 +54,7 @@
+ #define CT_ATTR_REPL_BYTES	(1UL << 25)
+ #define CT_ATTR_TIMESTAMP	(1UL << 26)
+ #define CT_ATTR_ZONE	(1UL << 27)
++#define CT_ATTR_AVASTMARK	(1UL << 28)
+ /** @endcond */
+ 
+ static void ct_free_data(struct nl_object *c)
+@@ -195,6 +196,9 @@ static void ct_dump_line(struct nl_object *a, struct nl_dump_params *p)
+ 	if (nfnl_ct_test_mark(ct) && nfnl_ct_get_mark(ct))
+ 		nl_dump(p, "mark %u ", nfnl_ct_get_mark(ct));
+ 
++	if (nfnl_ct_test_avastmark(ct) && nfnl_ct_get_avastmark(ct))
++		nl_dump(p, "avastmark %u ", nfnl_ct_get_avastmark(ct));
++
+ 	if (nfnl_ct_test_zone(ct))
+ 		nl_dump(p, "zone %hu ", nfnl_ct_get_zone(ct));
+ 
+@@ -317,6 +321,7 @@ static uint64_t ct_compare(struct nl_object *_a, struct nl_object *_b,
+ 	diff |= CT_DIFF_VAL(TCP_STATE,		ct_protoinfo.tcp.state);
+ 	diff |= CT_DIFF_VAL(TIMEOUT,		ct_timeout);
+ 	diff |= CT_DIFF_VAL(MARK,		ct_mark);
++	diff |= CT_DIFF_VAL(AVASTMARK,		ct_avastmark);
+ 	diff |= CT_DIFF_VAL(USE,		ct_use);
+ 	diff |= CT_DIFF_VAL(ID,			ct_id);
+ 	diff |= CT_DIFF_ADDR(ORIG_SRC,		ct_orig.src);
+@@ -358,6 +363,7 @@ static const struct trans_tbl ct_attrs[] = {
+ 	__ADD(CT_ATTR_STATUS,		status),
+ 	__ADD(CT_ATTR_TIMEOUT,		timeout),
+ 	__ADD(CT_ATTR_MARK,		mark),
++	__ADD(CT_ATTR_AVASTMARK,	avastmark),
+ 	__ADD(CT_ATTR_USE,		use),
+ 	__ADD(CT_ATTR_ID,		id),
+ 	__ADD(CT_ATTR_ORIG_SRC,		origsrc),
+@@ -562,6 +568,22 @@ uint32_t nfnl_ct_get_mark(const struct nfnl_ct *ct)
+ 	return ct->ct_mark;
+ }
+ 
++void nfnl_ct_set_avastmark(struct nfnl_ct *ct, uint32_t avastmark)
++{
++	ct->ct_avastmark = avastmark;
++	ct->ce_mask |= CT_ATTR_AVASTMARK;
++}
++
++int nfnl_ct_test_avastmark(const struct nfnl_ct *ct)
++{
++	return !!(ct->ce_mask & CT_ATTR_AVASTMARK);
++}
++
++uint32_t nfnl_ct_get_avastmark(const struct nfnl_ct *ct)
++{
++	return ct->ct_avastmark;
++}
++
+ void nfnl_ct_set_use(struct nfnl_ct *ct, uint32_t use)
+ {
+ 	ct->ct_use = use;
+diff --git a/lib/netfilter/log_msg.c b/lib/netfilter/log_msg.c
+index e1f92eb..19d36a3 100644
+--- a/lib/netfilter/log_msg.c
++++ b/lib/netfilter/log_msg.c
+@@ -34,6 +34,7 @@ static struct nla_policy log_msg_policy[NFULA_MAX+1] = {
+ 		.minlen = sizeof(struct nfulnl_msg_packet_hdr)
+ 	},
+ 	[NFULA_MARK]			= { .type = NLA_U32 },
++	[NFULA_AVASTMARK]		= { .type = NLA_U32 },
+ 	[NFULA_TIMESTAMP]		= {
+ 		.minlen = sizeof(struct nfulnl_msg_packet_timestamp)
+ 	},
+@@ -85,6 +86,10 @@ int nfnlmsg_log_msg_parse(struct nlmsghdr *nlh, struct nfnl_log_msg **result)
+ 	if (attr)
+ 		nfnl_log_msg_set_mark(msg, ntohl(nla_get_u32(attr)));
+ 
++	attr = tb[NFULA_AVASTMARK];
++	if (attr)
++		nfnl_log_msg_set_avastmark(msg, ntohl(nla_get_u32(attr)));
++
+ 	attr = tb[NFULA_TIMESTAMP];
+ 	if (attr) {
+ 		struct nfulnl_msg_packet_timestamp *timestamp = nla_data(attr);
+diff --git a/lib/netfilter/log_msg_obj.c b/lib/netfilter/log_msg_obj.c
+index 90b7bc9..53a3dc0 100644
+--- a/lib/netfilter/log_msg_obj.c
++++ b/lib/netfilter/log_msg_obj.c
+@@ -34,6 +34,7 @@
+ #define LOG_MSG_ATTR_GID		(1UL << 13)
+ #define LOG_MSG_ATTR_SEQ		(1UL << 14)
+ #define LOG_MSG_ATTR_SEQ_GLOBAL		(1UL << 15)
++#define LOG_MSG_ATTR_AVASTMARK		(1UL << 16)
+ /** @endcond */
+ 
+ static void log_msg_free_data(struct nl_object *c)
+@@ -152,6 +153,9 @@ static void log_msg_dump(struct nl_object *a, struct nl_dump_params *p)
+ 	if (msg->ce_mask & LOG_MSG_ATTR_MARK)
+ 		nl_dump(p, "MARK=%u ", msg->log_msg_mark);
+ 
++	if (msg->ce_mask & LOG_MSG_ATTR_AVASTMARK)
++		nl_dump(p, "AVASTMARK=%u ", msg->log_msg_avastmark);
++
+ 	if (msg->ce_mask & LOG_MSG_ATTR_PAYLOAD)
+ 		nl_dump(p, "PAYLOADLEN=%d ", msg->log_msg_payload_len);
+ 
+@@ -262,6 +266,22 @@ uint32_t nfnl_log_msg_get_mark(const struct nfnl_log_msg *msg)
+ 	return msg->log_msg_mark;
+ }
+ 
++void nfnl_log_msg_set_avastmark(struct nfnl_log_msg *msg, uint32_t avastmark)
++{
++	msg->log_msg_avastmark = avastmark;
++	msg->ce_mask |= LOG_MSG_ATTR_AVASTMARK;
++}
++
++int nfnl_log_msg_test_avastmark(const struct nfnl_log_msg *msg)
++{
++	return !!(msg->ce_mask & LOG_MSG_ATTR_AVASTMARK);
++}
++
++uint32_t nfnl_log_msg_get_avastmark(const struct nfnl_log_msg *msg)
++{
++	return msg->log_msg_avastmark;
++}
++
+ void nfnl_log_msg_set_timestamp(struct nfnl_log_msg *msg, struct timeval *tv)
+ {
+ 	msg->log_msg_timestamp.tv_sec = tv->tv_sec;
+diff --git a/lib/netfilter/queue_msg.c b/lib/netfilter/queue_msg.c
+index 68ed71e..6f11be3 100644
+--- a/lib/netfilter/queue_msg.c
++++ b/lib/netfilter/queue_msg.c
+@@ -37,6 +37,7 @@ static struct nla_policy queue_policy[NFQA_MAX+1] = {
+ 		.minlen	= sizeof(struct nfqnl_msg_verdict_hdr),
+ 	},
+ 	[NFQA_MARK]			= { .type = NLA_U32 },
++	[NFQA_AVASTMARK]		= { .type = NLA_U32 },
+ 	[NFQA_TIMESTAMP]		= {
+ 		.minlen = sizeof(struct nfqnl_msg_packet_timestamp),
+ 	},
+@@ -85,6 +86,10 @@ int nfnlmsg_queue_msg_parse(struct nlmsghdr *nlh,
+ 	if (attr)
+ 		nfnl_queue_msg_set_mark(msg, ntohl(nla_get_u32(attr)));
+ 
++	attr = tb[NFQA_AVASTMARK];
++	if (attr)
++		nfnl_queue_msg_set_avastmark(msg, ntohl(nla_get_u32(attr)));
++
+ 	attr = tb[NFQA_TIMESTAMP];
+ 	if (attr) {
+ 		struct nfqnl_msg_packet_timestamp *timestamp = nla_data(attr);
+@@ -174,6 +179,11 @@ __nfnl_queue_msg_build_verdict(const struct nfnl_queue_msg *msg,
+ 			ntohl(nfnl_queue_msg_get_mark(msg))) < 0)
+ 		goto nla_put_failure;
+ 
++	if (nfnl_queue_msg_test_avastmark(msg) &&
++	    nla_put_u32(nlmsg, NFQA_AVASTMARK,
++			ntohl(nfnl_queue_msg_get_avastmark(msg))) < 0)
++		goto nla_put_failure;
++
+ 	return nlmsg;
+ 
+ nla_put_failure:
+diff --git a/lib/netfilter/queue_msg_obj.c b/lib/netfilter/queue_msg_obj.c
+index 1e89cc4..d927a4f 100644
+--- a/lib/netfilter/queue_msg_obj.c
++++ b/lib/netfilter/queue_msg_obj.c
+@@ -31,6 +31,7 @@
+ #define QUEUE_MSG_ATTR_HWADDR		(1UL << 11)
+ #define QUEUE_MSG_ATTR_PAYLOAD		(1UL << 12)
+ #define QUEUE_MSG_ATTR_VERDICT		(1UL << 13)
++#define QUEUE_MSG_ATTR_AVASTMARK	(1UL << 28)
+ /** @endcond */
+ 
+ static void nfnl_queue_msg_free_data(struct nl_object *c)
+@@ -141,6 +142,9 @@ static void nfnl_queue_msg_dump(struct nl_object *a, struct nl_dump_params *p)
+ 	if (msg->ce_mask & QUEUE_MSG_ATTR_MARK)
+ 		nl_dump(p, "MARK=%d ", msg->queue_msg_mark);
+ 
++	if (msg->ce_mask & QUEUE_MSG_ATTR_AVASTMARK)
++		nl_dump(p, "AVASTMARK=%d ", msg->queue_msg_avastmark);
++
+ 	if (msg->ce_mask & QUEUE_MSG_ATTR_PAYLOAD)
+ 		nl_dump(p, "PAYLOADLEN=%d ", msg->queue_msg_payload_len);
+ 
+@@ -289,6 +293,22 @@ uint32_t nfnl_queue_msg_get_mark(const struct nfnl_queue_msg *msg)
+ 	return msg->queue_msg_mark;
+ }
+ 
++void nfnl_queue_msg_set_avastmark(struct nfnl_queue_msg *msg, uint32_t avastmark)
++{
++	msg->queue_msg_avastmark = avastmark;
++	msg->ce_mask |= QUEUE_MSG_ATTR_AVASTMARK;
++}
++
++int nfnl_queue_msg_test_avastmark(const struct nfnl_queue_msg *msg)
++{
++	return !!(msg->ce_mask & QUEUE_MSG_ATTR_AVASTMARK);
++}
++
++uint32_t nfnl_queue_msg_get_avastmark(const struct nfnl_queue_msg *msg)
++{
++	return msg->queue_msg_avastmark;
++}
++
+ void nfnl_queue_msg_set_timestamp(struct nfnl_queue_msg *msg,
+ 				  struct timeval *tv)
+ {
+@@ -465,6 +485,7 @@ static const struct trans_tbl nfnl_queue_msg_attrs[] = {
+ 	__ADD(QUEUE_MSG_ATTR_HWPROTO,		hwproto),
+ 	__ADD(QUEUE_MSG_ATTR_HOOK,		hook),
+ 	__ADD(QUEUE_MSG_ATTR_MARK,		mark),
++	__ADD(QUEUE_MSG_ATTR_AVASTMARK,		avastmark),
+ 	__ADD(QUEUE_MSG_ATTR_TIMESTAMP,		timestamp),
+ 	__ADD(QUEUE_MSG_ATTR_INDEV,		indev),
+ 	__ADD(QUEUE_MSG_ATTR_OUTDEV,		outdev),
+diff --git a/libnl-cli-3.sym b/libnl-cli-3.sym
+index 71ff2eb..cfe70b4 100644
+--- a/libnl-cli-3.sym
++++ b/libnl-cli-3.sym
+@@ -23,6 +23,7 @@ global:
+ 	nl_cli_connect;
+ 	nl_cli_ct_alloc;
+ 	nl_cli_ct_alloc_cache;
++	nl_cli_ct_parse_avastmark;
+ 	nl_cli_ct_parse_dst;
+ 	nl_cli_ct_parse_dst_port;
+ 	nl_cli_ct_parse_family;
+diff --git a/libnl-nf-3.sym b/libnl-nf-3.sym
+index 504e2dd..40f8ec4 100644
+--- a/libnl-nf-3.sym
++++ b/libnl-nf-3.sym
+@@ -27,6 +27,7 @@ global:
+ 	nfnl_ct_get_icmp_type;
+ 	nfnl_ct_get_id;
+ 	nfnl_ct_get_mark;
++	nfnl_ct_get_avastmark;
+ 	nfnl_ct_get_packets;
+ 	nfnl_ct_get_proto;
+ 	nfnl_ct_get_src;
+@@ -39,6 +40,7 @@ global:
+ 	nfnl_ct_get_zone;
+ 	nfnl_ct_put;
+ 	nfnl_ct_query;
++	nfnl_ct_set_avastmark;
+ 	nfnl_ct_set_bytes;
+ 	nfnl_ct_set_dst;
+ 	nfnl_ct_set_dst_port;
+@@ -62,6 +64,7 @@ global:
+ 	nfnl_ct_str2status;
+ 	nfnl_ct_str2tcp_state;
+ 	nfnl_ct_tcp_state2str;
++	nfnl_ct_test_avastmark;
+ 	nfnl_ct_test_bytes;
+ 	nfnl_ct_test_dst_port;
+ 	nfnl_ct_test_icmp_code;
+@@ -175,6 +178,7 @@ global:
+ 	nfnl_log_msg_get_timestamp;
+ 	nfnl_log_msg_get_uid;
+ 	nfnl_log_msg_put;
++	nfnl_log_msg_set_avastmark;
+ 	nfnl_log_msg_set_family;
+ 	nfnl_log_msg_set_gid;
+ 	nfnl_log_msg_set_hook;
+@@ -236,6 +240,7 @@ global:
+ 	nfnl_queue_msg_build_verdict;
+ 	nfnl_queue_msg_build_verdict_batch;
+ 	nfnl_queue_msg_get;
++	nfnl_queue_msg_get_avastmark;
+ 	nfnl_queue_msg_get_family;
+ 	nfnl_queue_msg_get_group;
+ 	nfnl_queue_msg_get_hook;
+@@ -254,6 +259,7 @@ global:
+ 	nfnl_queue_msg_send_verdict;
+ 	nfnl_queue_msg_send_verdict_batch;
+ 	nfnl_queue_msg_send_verdict_payload;
++	nfnl_queue_msg_set_avastmark;
+ 	nfnl_queue_msg_set_family;
+ 	nfnl_queue_msg_set_group;
+ 	nfnl_queue_msg_set_hook;
+@@ -268,6 +274,7 @@ global:
+ 	nfnl_queue_msg_set_physoutdev;
+ 	nfnl_queue_msg_set_timestamp;
+ 	nfnl_queue_msg_set_verdict;
++	nfnl_queue_msg_test_avastmark;
+ 	nfnl_queue_msg_test_family;
+ 	nfnl_queue_msg_test_group;
+ 	nfnl_queue_msg_test_hook;
+diff --git a/src/lib/ct.c b/src/lib/ct.c
+index e6732ae..241bf10 100644
+--- a/src/lib/ct.c
++++ b/src/lib/ct.c
+@@ -66,6 +66,12 @@ void nl_cli_ct_parse_mark(struct nfnl_ct *ct, char *arg)
+ 	nfnl_ct_set_mark(ct, mark);
+ }
+ 
++void nl_cli_ct_parse_avastmark(struct nfnl_ct *ct, char *arg)
++{
++	uint32_t avastmark = nl_cli_parse_u32(arg);
++	nfnl_ct_set_avastmark(ct, avastmark);
++}
++
+ void nl_cli_ct_parse_timeout(struct nfnl_ct *ct, char *arg)
+ {
+ 	uint32_t timeout = nl_cli_parse_u32(arg);
+diff --git a/src/nf-ct-add.c b/src/nf-ct-add.c
+index eec9b86..5c5cf68 100644
+--- a/src/nf-ct-add.c
++++ b/src/nf-ct-add.c
+@@ -41,6 +41,7 @@ static void print_usage(void)
+ 	"     --reply-dport=PORT  Reply destination port\n"
+ 	" -F, --family=FAMILY     Address family\n"
+ 	"     --mark=NUM          Mark value\n"
++	"     --avastmark=NUM     Avastmark value\n"
+ 	"     --timeout=NUM       Timeout value\n"
+ 	"     --status            Bitset representing status of connection.\n"
+ 	"     --zone=NUM          Zone value\n"
+@@ -72,6 +73,7 @@ int main(int argc, char *argv[])
+ 			ARG_REPLY_DST,
+ 			ARG_REPLY_DPORT,
+ 			ARG_MARK,
++			ARG_AVASTMARK,
+ 			ARG_TIMEOUT,
+ 			ARG_STATUS,
+ 			ARG_ZONE,
+@@ -91,6 +93,7 @@ int main(int argc, char *argv[])
+ 			{ "reply-dport", 1, 0, ARG_REPLY_DPORT },
+ 			{ "family", 1, 0, 'F' },
+ 			{ "mark", 1, 0, ARG_MARK },
++			{ "avastmark", 1, 0, ARG_AVASTMARK },
+ 			{ "timeout", 1, 0, ARG_TIMEOUT },
+ 			{ "status", 1, 0, ARG_STATUS },
+ 			{ "zone", 1, 0, ARG_ZONE },
+@@ -119,6 +122,7 @@ int main(int argc, char *argv[])
+ 		case ARG_REPLY_DPORT: nl_cli_ct_parse_dst_port(ct, 1, optarg); break;
+ 		case 'F': nl_cli_ct_parse_family(ct, optarg); break;
+ 		case ARG_MARK: nl_cli_ct_parse_mark(ct, optarg); break;
++		case ARG_AVASTMARK: nl_cli_ct_parse_avastmark(ct, optarg); break;
+ 		case ARG_TIMEOUT: nl_cli_ct_parse_timeout(ct, optarg); break;
+ 		case ARG_STATUS: nl_cli_ct_parse_status(ct, optarg); break;
+ 		case ARG_ZONE: nl_cli_ct_parse_zone(ct, optarg); break;
+diff --git a/src/nf-ct-list.c b/src/nf-ct-list.c
+index c512027..a54be73 100644
+--- a/src/nf-ct-list.c
++++ b/src/nf-ct-list.c
+@@ -41,6 +41,7 @@ static void print_usage(void)
+ 	"     --reply-dport=PORT  Reply destination port\n"
+ 	" -F, --family=FAMILY     Address family\n"
+ 	"     --mark=NUM          Mark value\n"
++	"     --avastmark=NUM     Avastmark value\n"
+ 	"     --timeout=NUM       Timeout value\n"
+ 	"     --refcnt=NUM        Use counter value\n"
+ 	"     --flags             Flags\n"
+@@ -76,6 +77,7 @@ int main(int argc, char *argv[])
+ 			ARG_TIMEOUT,
+ 			ARG_REFCNT,
+ 			ARG_FLAGS,
++			ARG_AVASTMARK,
+ 		};
+ 		static struct option long_opts[] = {
+ 			{ "format", 1, 0, 'f' },
+@@ -94,6 +96,7 @@ int main(int argc, char *argv[])
+ 			{ "reply-dport", 1, 0, ARG_REPLY_DPORT },
+ 			{ "family", 1, 0, 'F' },
+ 			{ "mark", 1, 0, ARG_MARK },
++			{ "avastmark", 1, 0, ARG_AVASTMARK },
+ 			{ "timeout", 1, 0, ARG_TIMEOUT },
+ 			{ "refcnt", 1, 0, ARG_REFCNT },
+ 			{ 0, 0, 0, 0 }
+@@ -123,6 +126,7 @@ int main(int argc, char *argv[])
+ 		case ARG_REPLY_DPORT: nl_cli_ct_parse_dst_port(ct, 1, optarg); break;
+ 		case 'F': nl_cli_ct_parse_family(ct, optarg); break;
+ 		case ARG_MARK: nl_cli_ct_parse_mark(ct, optarg); break;
++		case ARG_AVASTMARK: nl_cli_ct_parse_avastmark(ct, optarg); break;
+ 		case ARG_TIMEOUT: nl_cli_ct_parse_timeout(ct, optarg); break;
+ 		case ARG_REFCNT: nl_cli_ct_parse_use(ct, optarg); break;
+ 		case ARG_FLAGS: nl_cli_ct_parse_status(ct, optarg); break;

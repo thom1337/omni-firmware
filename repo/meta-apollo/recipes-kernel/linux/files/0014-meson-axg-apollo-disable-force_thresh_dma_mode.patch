@@ -1,0 +1,24 @@
+From 81143bc76a1aef2a8ed27d47f3a7ef5cc7621e05 Mon Sep 17 00:00:00 2001
+From: Jan Kaisrlik <jan.kaisrlik@avast.com>
+Date: Thu, 19 Dec 2019 15:04:48 +0100
+Subject: [PATCH 14/14] meson-axg-apollo: disable force_thresh_dma_mode
+
+---
+ arch/arm64/boot/dts/amlogic/meson-axg-apollo.dts | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/amlogic/meson-axg-apollo.dts b/arch/arm64/boot/dts/amlogic/meson-axg-apollo.dts
+index 1202e165cb87..89df9cbdedfb 100644
+--- a/arch/arm64/boot/dts/amlogic/meson-axg-apollo.dts
++++ b/arch/arm64/boot/dts/amlogic/meson-axg-apollo.dts
+@@ -97,7 +97,6 @@
+ 	pinctrl-names = "default";
+ 	phy-handle = <&eth_phy0>;
+ 	phy-mode = "rgmii";
+-	snps,force_thresh_dma_mode = "1";
+ 	snps,pbl = "32"; // default value is 8
+ 	rx-fifo-depth = <4096>; // max hw value
+ 	tx-fifo-depth = <2048>; // max hw value
+-- 
+2.30.2
+

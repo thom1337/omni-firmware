@@ -1,0 +1,792 @@
+From d9276f8389646ca45482552ef8283a9993fd69ee Mon Sep 17 00:00:00 2001
+From: Vladyslav Movchan <vladyslav.movchan@avast.com>
+Date: Wed, 23 Sep 2020 15:14:14 +0200
+Subject: [PATCH] avastmark: extra marks for packets and connections
+
+---
+ include/linux/skbuff.h                        |   5 +
+ include/net/netfilter/nf_conntrack.h          |   4 +
+ .../linux/netfilter/nfnetlink_conntrack.h     |   2 +
+ include/uapi/linux/netfilter/nfnetlink_log.h  |   1 +
+ .../uapi/linux/netfilter/nfnetlink_queue.h    |   1 +
+ net/ipv4/netfilter/nf_log_ipv4.c              |   6 +
+ net/ipv6/netfilter/nf_log_ipv6.c              |   6 +
+ net/netfilter/Kconfig                         |  34 ++++
+ net/netfilter/Makefile                        |   2 +
+ net/netfilter/nf_conntrack_core.c             |   3 +
+ net/netfilter/nf_conntrack_netlink.c          |  97 +++++++++-
+ net/netfilter/nf_conntrack_standalone.c       |   4 +
+ net/netfilter/nfnetlink_log.c                 |   6 +
+ net/netfilter/nfnetlink_queue.c               |  19 ++
+ net/netfilter/xt_avastmark.c                  |  85 +++++++++
+ net/netfilter/xt_connavastmark.c              | 166 ++++++++++++++++++
+ 16 files changed, 439 insertions(+), 2 deletions(-)
+ create mode 100644 net/netfilter/xt_avastmark.c
+ create mode 100644 net/netfilter/xt_connavastmark.c
+
+diff --git a/include/linux/skbuff.h b/include/linux/skbuff.h
+index 955e1370f033..f6d33b6892ec 100644
+--- a/include/linux/skbuff.h
++++ b/include/linux/skbuff.h
+@@ -664,6 +664,7 @@ typedef unsigned char *sk_buff_data_t;
+  *	@napi_id: id of the NAPI struct this skb came from
+  *	@secmark: security marking
+  *	@mark: Generic packet mark
++ *	@avastmark: Avast packet mark
+  *	@vlan_proto: vlan encapsulation protocol
+  *	@vlan_tci: vlan tag control information
+  *	@inner_protocol: Protocol (encapsulation)
+@@ -856,6 +857,10 @@ struct sk_buff {
+ 		__u32		reserved_tailroom;
+ 	};
+ 
++#ifdef CONFIG_NF_CONNTRACK_AVASTMARK
++	__u32			avastmark;
++#endif
++
+ 	union {
+ 		__be16		inner_protocol;
+ 		__u8		inner_ipproto;
+diff --git a/include/net/netfilter/nf_conntrack.h b/include/net/netfilter/nf_conntrack.h
+index 90690e37a56f..061a19892282 100644
+--- a/include/net/netfilter/nf_conntrack.h
++++ b/include/net/netfilter/nf_conntrack.h
+@@ -96,6 +96,10 @@ struct nf_conn {
+ 	u_int32_t mark;
+ #endif
+ 
++#if defined(CONFIG_NF_CONNTRACK_AVASTMARK)
++	u_int32_t avastmark;
++#endif
++
+ #ifdef CONFIG_NF_CONNTRACK_SECMARK
+ 	u_int32_t secmark;
+ #endif
+diff --git a/include/uapi/linux/netfilter/nfnetlink_conntrack.h b/include/uapi/linux/netfilter/nfnetlink_conntrack.h
+index 1d41810d17e2..2581c291aa49 100644
+--- a/include/uapi/linux/netfilter/nfnetlink_conntrack.h
++++ b/include/uapi/linux/netfilter/nfnetlink_conntrack.h
+@@ -55,6 +55,8 @@ enum ctattr_type {
+ 	CTA_LABELS,
+ 	CTA_LABELS_MASK,
+ 	CTA_SYNPROXY,
++	CTA_AVASTMARK,
++	CTA_AVASTMARK_MASK,
+ 	__CTA_MAX
+ };
+ #define CTA_MAX (__CTA_MAX - 1)
+diff --git a/include/uapi/linux/netfilter/nfnetlink_log.h b/include/uapi/linux/netfilter/nfnetlink_log.h
+index 45c8d3b027e0..be61e4214a3f 100644
+--- a/include/uapi/linux/netfilter/nfnetlink_log.h
++++ b/include/uapi/linux/netfilter/nfnetlink_log.h
+@@ -65,6 +65,7 @@ enum nfulnl_attr_type {
+ 	NFULA_CT_INFO,                  /* enum ip_conntrack_info */
+ 	NFULA_VLAN,			/* nested attribute: packet vlan info */
+ 	NFULA_L2HDR,			/* full L2 header */
++	NFULA_AVASTMARK,		/* __u32 nfmark */
+ 
+ 	__NFULA_MAX
+ };
+diff --git a/include/uapi/linux/netfilter/nfnetlink_queue.h b/include/uapi/linux/netfilter/nfnetlink_queue.h
+index bcb2cb5d40b9..c5b2912afc5b 100644
+--- a/include/uapi/linux/netfilter/nfnetlink_queue.h
++++ b/include/uapi/linux/netfilter/nfnetlink_queue.h
+@@ -61,6 +61,7 @@ enum nfqnl_attr_type {
+ 	NFQA_SECCTX,			/* security context string */
+ 	NFQA_VLAN,			/* nested attribute: packet vlan info */
+ 	NFQA_L2HDR,			/* full L2 header */
++	NFQA_AVASTMARK,			/* __u32 nfmark */
+ 
+ 	__NFQA_MAX
+ };
+diff --git a/net/ipv4/netfilter/nf_log_ipv4.c b/net/ipv4/netfilter/nf_log_ipv4.c
+index 4b2d49cc9f1a..47f3fb6bc87b 100644
+--- a/net/ipv4/netfilter/nf_log_ipv4.c
++++ b/net/ipv4/netfilter/nf_log_ipv4.c
+@@ -254,6 +254,12 @@ static void dump_ipv4_packet(struct net *net, struct nf_log_buf *m,
+ 	if (!iphoff && skb->mark)
+ 		nf_log_buf_add(m, "MARK=0x%x ", skb->mark);
+ 
++#ifdef CONFIG_NF_CONNTRACK_AVASTMARK
++	/* Max length: 16 "AVASTMARK=0xFFFFFFFF " */
++	if (!iphoff && skb->avastmark)
++		nf_log_buf_add(m, "AVASTMARK=0x%x ", skb->avastmark);
++#endif
++
+ 	/* Proto    Max log string length */
+ 	/* IP:	    40+46+6+11+127 = 230 */
+ 	/* TCP:     10+max(25,20+30+13+9+32+11+127) = 252 */
+diff --git a/net/ipv6/netfilter/nf_log_ipv6.c b/net/ipv6/netfilter/nf_log_ipv6.c
+index 22b80db6d882..95b39aa52031 100644
+--- a/net/ipv6/netfilter/nf_log_ipv6.c
++++ b/net/ipv6/netfilter/nf_log_ipv6.c
+@@ -280,6 +280,12 @@ static void dump_ipv6_packet(struct net *net, struct nf_log_buf *m,
+ 	/* Max length: 16 "MARK=0xFFFFFFFF " */
+ 	if (recurse && skb->mark)
+ 		nf_log_buf_add(m, "MARK=0x%x ", skb->mark);
++
++#ifdef CONFIG_NF_CONNTRACK_AVASTMARK
++	/* Max length: 16 "AVASTMARK=0xFFFFFFFF " */
++	if (recurse && skb->avastmark)
++		nf_log_buf_add(m, "AVASTMARK=0x%x ", skb->avastmark);
++#endif
+ }
+ 
+ static void dump_ipv6_mac_header(struct nf_log_buf *m,
+diff --git a/net/netfilter/Kconfig b/net/netfilter/Kconfig
+index 91efae88e8c2..c849018758e7 100644
+--- a/net/netfilter/Kconfig
++++ b/net/netfilter/Kconfig
+@@ -91,6 +91,15 @@ config NF_CONNTRACK_MARK
+ 	  of packets, but this mark value is kept in the conntrack session
+ 	  instead of the individual packets.
+ 
++config NF_CONNTRACK_AVASTMARK
++	bool  'Avast connection mark tracking support'
++	depends on NETFILTER_ADVANCED
++	help
++	  This option enables support for Avast connection marks, used by
++	  the `CONNAVASTMARK' target and `connavastmark' match. Similar to
++	  the avastmark value of packets, but this mark value is kept in
++	  the conntrack session instead of the individual packets.
++
+ config NF_CONNTRACK_SECMARK
+ 	bool  'Connection tracking security mark support'
+ 	depends on NETWORK_SECMARK
+@@ -736,6 +745,18 @@ config NETFILTER_XT_MARK
+ 	Prior to routing, the nfmark can influence the routing method and can
+ 	also be used by other subsystems to change their behavior.
+ 
++config NETFILTER_XT_AVASTMARK
++	tristate 'nfavastmark target and match support'
++	default m if NETFILTER_ADVANCED=n
++	---help---
++	This option adds the "AVASTMARK" target and "avastmark" match.
++
++	Netfilter mark matching allows you to match packets based on the
++	"nfavastmark" value in the packet.
++	The target allows you to create rules in the "mangle" table which
++	alter the netfilter avastmark (nfavastmark) field associated with
++	the packet.
++
+ config NETFILTER_XT_CONNMARK
+ 	tristate 'ctmark target and match support'
+ 	depends on NF_CONNTRACK
+@@ -748,6 +769,19 @@ config NETFILTER_XT_CONNMARK
+ 	ctmark), similarly to the packet mark (nfmark). Using this
+ 	target and match, you can set and match on this mark.
+ 
++config NETFILTER_XT_CONNAVASTMARK
++	tristate 'ctavastmark target and match support'
++	depends on NF_CONNTRACK
++	depends on NETFILTER_ADVANCED
++	select NF_CONNTRACK_AVASTMARK
++	---help---
++	This option adds the "CONNAVASTMARK" target and "connavastmark"
++	match.
++
++	Netfilter allows you to store a mark value per connection (a.k.a.
++	ctavastmark), similarly to the packet mark (nfavastmark). Using
++	this target and match, you can set and match on this mark.
++
+ config NETFILTER_XT_SET
+ 	tristate 'set target and match support'
+ 	depends on IP_SET
+diff --git a/net/netfilter/Makefile b/net/netfilter/Makefile
+index 4fc075b612fe..5d0e7224346d 100644
+--- a/net/netfilter/Makefile
++++ b/net/netfilter/Makefile
+@@ -130,6 +130,8 @@ obj-$(CONFIG_NETFILTER_XTABLES) += x_tables.o xt_tcpudp.o
+ # combos
+ obj-$(CONFIG_NETFILTER_XT_MARK) += xt_mark.o
+ obj-$(CONFIG_NETFILTER_XT_CONNMARK) += xt_connmark.o
++obj-$(CONFIG_NETFILTER_XT_AVASTMARK) += xt_avastmark.o
++obj-$(CONFIG_NETFILTER_XT_CONNAVASTMARK) += xt_connavastmark.o
+ obj-$(CONFIG_NETFILTER_XT_SET) += xt_set.o
+ obj-$(CONFIG_NETFILTER_XT_NAT) += xt_nat.o
+ 
+diff --git a/net/netfilter/nf_conntrack_core.c b/net/netfilter/nf_conntrack_core.c
+index 200cdad3ff3a..4af0e9ddd186 100644
+--- a/net/netfilter/nf_conntrack_core.c
++++ b/net/netfilter/nf_conntrack_core.c
+@@ -1493,6 +1493,9 @@ init_conntrack(struct net *net, struct nf_conn *tmpl,
+ #ifdef CONFIG_NF_CONNTRACK_MARK
+ 			ct->mark = exp->master->mark;
+ #endif
++#ifdef CONFIG_NF_CONNTRACK_AVASTMARK
++			ct->avastmark = exp->master->avastmark;
++#endif
+ #ifdef CONFIG_NF_CONNTRACK_SECMARK
+ 			ct->secmark = exp->master->secmark;
+ #endif
+diff --git a/net/netfilter/nf_conntrack_netlink.c b/net/netfilter/nf_conntrack_netlink.c
+index aa8adf930b3c..860358c70a18 100644
+--- a/net/netfilter/nf_conntrack_netlink.c
++++ b/net/netfilter/nf_conntrack_netlink.c
+@@ -325,6 +325,21 @@ static int ctnetlink_dump_mark(struct sk_buff *skb, const struct nf_conn *ct)
+ #define ctnetlink_dump_mark(a, b) (0)
+ #endif
+ 
++#ifdef CONFIG_NF_CONNTRACK_AVASTMARK
++static inline int
++ctnetlink_dump_avastmark(struct sk_buff *skb, const struct nf_conn *ct)
++{
++	if (nla_put_be32(skb, CTA_AVASTMARK, htonl(ct->avastmark)))
++		goto nla_put_failure;
++	return 0;
++
++nla_put_failure:
++	return -1;
++}
++#else
++#define ctnetlink_dump_avastmark(a, b) (0)
++#endif
++
+ #ifdef CONFIG_NF_CONNTRACK_SECMARK
+ static int ctnetlink_dump_secctx(struct sk_buff *skb, const struct nf_conn *ct)
+ {
+@@ -557,6 +572,7 @@ ctnetlink_fill_info(struct sk_buff *skb, u32 portid, u32 seq, u32 type,
+ 	    ctnetlink_dump_timestamp(skb, ct) < 0 ||
+ 	    ctnetlink_dump_helpinfo(skb, ct) < 0 ||
+ 	    ctnetlink_dump_mark(skb, ct) < 0 ||
++	    ctnetlink_dump_avastmark(skb, ct) < 0 ||
+ 	    ctnetlink_dump_secctx(skb, ct) < 0 ||
+ 	    ctnetlink_dump_labels(skb, ct) < 0 ||
+ 	    ctnetlink_dump_id(skb, ct) < 0 ||
+@@ -668,6 +684,9 @@ static size_t ctnetlink_nlmsg_size(const struct nf_conn *ct)
+ #ifdef CONFIG_NF_CONNTRACK_MARK
+ 	       + nla_total_size(sizeof(u_int32_t)) /* CTA_MARK */
+ #endif
++#ifdef CONFIG_NF_CONNTRACK_AVASTMARK
++	       + nla_total_size(sizeof(u_int32_t)) /* CTA_AVASTMARK */
++#endif
+ #ifdef CONFIG_NF_CONNTRACK_ZONES
+ 	       + nla_total_size(sizeof(u_int16_t)) /* CTA_ZONE|CTA_TUPLE_ZONE */
+ #endif
+@@ -796,6 +815,12 @@ ctnetlink_conntrack_event(unsigned int events, struct nf_ct_event *item)
+ 	    && ctnetlink_dump_mark(skb, ct) < 0)
+ 		goto nla_put_failure;
+ #endif
++
++#ifdef CONFIG_NF_CONNTRACK_AVASTMARK
++	if ((events & (1 << IPCT_MARK) || ct->avastmark)
++	    && ctnetlink_dump_avastmark(skb, ct) < 0)
++		goto nla_put_failure;
++#endif
+ 	nlmsg_end(skb, nlh);
+ 	err = nfnetlink_send(skb, net, item->portid, group, item->report,
+ 			     GFP_ATOMIC);
+@@ -830,6 +855,12 @@ struct ctnetlink_filter {
+ 		u_int32_t val;
+ 		u_int32_t mask;
+ 	} mark;
++#ifdef CONFIG_NF_CONNTRACK_AVASTMARK
++	struct {
++		u_int32_t val;
++		u_int32_t mask;
++	} avastmark;
++#endif
+ };
+ 
+ static struct ctnetlink_filter *
+@@ -853,6 +884,12 @@ ctnetlink_alloc_filter(const struct nlattr * const cda[], u8 family)
+ 		filter->mark.val = ntohl(nla_get_be32(cda[CTA_MARK]));
+ 		filter->mark.mask = ntohl(nla_get_be32(cda[CTA_MARK_MASK]));
+ 	}
++#endif
++#ifdef CONFIG_NF_CONNTRACK_AVASTMARK
++	if (cda[CTA_AVASTMARK] && cda[CTA_AVASTMARK_MASK]) {
++		filter->avastmark.val = ntohl(nla_get_be32(cda[CTA_AVASTMARK]));
++		filter->avastmark.mask = ntohl(nla_get_be32(cda[CTA_AVASTMARK_MASK]));
++	}
+ #endif
+ 	return filter;
+ }
+@@ -864,7 +901,11 @@ static int ctnetlink_start(struct netlink_callback *cb)
+ 	struct nfgenmsg *nfmsg = nlmsg_data(cb->nlh);
+ 	u8 family = nfmsg->nfgen_family;
+ 
+-	if (family || (cda[CTA_MARK] && cda[CTA_MARK_MASK])) {
++	if (family || (cda[CTA_MARK] && cda[CTA_MARK_MASK])
++#ifdef CONFIG_NF_CONNTRACK_AVASTMARK
++		|| (cda[CTA_AVASTMARK] && cda[CTA_AVASTMARK_MASK])
++#endif
++	) {
+ 		filter = ctnetlink_alloc_filter(cda, family);
+ 		if (IS_ERR(filter))
+ 			return PTR_ERR(filter);
+@@ -893,6 +934,11 @@ static int ctnetlink_filter_match(struct nf_conn *ct, void *data)
+ 		goto ignore_entry;
+ #endif
+ 
++#ifdef CONFIG_NF_CONNTRACK_AVASTMARK
++	if ((ct->avastmark & filter->avastmark.mask) != filter->avastmark.val)
++		goto ignore_entry;
++#endif
++
+ out:
+ 	return 1;
+ 
+@@ -1220,6 +1266,8 @@ static const struct nla_policy ct_nla_policy[CTA_MAX+1] = {
+ 				    .len = NF_CT_LABELS_MAX_SIZE },
+ 	[CTA_LABELS_MASK]	= { .type = NLA_BINARY,
+ 				    .len = NF_CT_LABELS_MAX_SIZE },
++	[CTA_AVASTMARK]		= { .type = NLA_U32 },
++	[CTA_AVASTMARK_MASK]	= { .type = NLA_U32 },
+ };
+ 
+ static int ctnetlink_flush_iterate(struct nf_conn *ct, void *data)
+@@ -1236,7 +1284,11 @@ static int ctnetlink_flush_conntrack(struct net *net,
+ {
+ 	struct ctnetlink_filter *filter = NULL;
+ 
+-	if (family || (cda[CTA_MARK] && cda[CTA_MARK_MASK])) {
++	if (family || (cda[CTA_MARK] && cda[CTA_MARK_MASK])
++#ifdef CONFIG_NF_CONNTRACK_AVASTMARK
++		|| (cda[CTA_AVASTMARK] && cda[CTA_AVASTMARK_MASK])
++#endif
++	) {
+ 		filter = ctnetlink_alloc_filter(cda, family);
+ 		if (IS_ERR(filter))
+ 			return PTR_ERR(filter);
+@@ -1713,6 +1765,22 @@ static void ctnetlink_change_mark(struct nf_conn *ct,
+ }
+ #endif
+ 
++#if defined(CONFIG_NF_CONNTRACK_AVASTMARK)
++static void ctnetlink_change_avastmark(struct nf_conn *ct,
++				    const struct nlattr * const cda[])
++{
++	u32 mark, newmark, mask = 0;
++
++	if (cda[CTA_AVASTMARK_MASK])
++		mask = ~ntohl(nla_get_be32(cda[CTA_AVASTMARK_MASK]));
++
++	mark = ntohl(nla_get_be32(cda[CTA_AVASTMARK]));
++	newmark = (ct->avastmark & mask) ^ mark;
++	if (newmark != ct->avastmark)
++		ct->avastmark = newmark;
++}
++#endif
++
+ static const struct nla_policy protoinfo_policy[CTA_PROTOINFO_MAX+1] = {
+ 	[CTA_PROTOINFO_TCP]	= { .type = NLA_NESTED },
+ 	[CTA_PROTOINFO_DCCP]	= { .type = NLA_NESTED },
+@@ -1911,6 +1979,11 @@ ctnetlink_change_conntrack(struct nf_conn *ct,
+ 		ctnetlink_change_mark(ct, cda);
+ #endif
+ 
++#if defined(CONFIG_NF_CONNTRACK_AVASTMARK)
++	if (cda[CTA_AVASTMARK])
++		ctnetlink_change_avastmark(ct, cda);
++#endif
++
+ 	if (cda[CTA_SEQ_ADJ_ORIG] || cda[CTA_SEQ_ADJ_REPLY]) {
+ 		err = ctnetlink_change_seq_adj(ct, cda);
+ 		if (err < 0)
+@@ -2055,6 +2128,11 @@ ctnetlink_create_conntrack(struct net *net,
+ 		ctnetlink_change_mark(ct, cda);
+ #endif
+ 
++#if defined(CONFIG_NF_CONNTRACK_AVASTMARK)
++	if (cda[CTA_AVASTMARK])
++		ctnetlink_change_avastmark(ct, cda);
++#endif
++
+ 	/* setup master conntrack: this is a confirmed expectation */
+ 	if (cda[CTA_TUPLE_MASTER]) {
+ 		struct nf_conntrack_tuple master;
+@@ -2388,6 +2466,9 @@ ctnetlink_glue_build_size(const struct nf_conn *ct)
+ #ifdef CONFIG_NF_CONNTRACK_MARK
+ 	       + nla_total_size(sizeof(u_int32_t)) /* CTA_MARK */
+ #endif
++#ifdef CONFIG_NF_CONNTRACK_AVASTMARK
++	       + nla_total_size(sizeof(u_int32_t)) /* CTA_AVASTMARK */
++#endif
+ #ifdef CONFIG_NF_CONNTRACK_ZONES
+ 	       + nla_total_size(sizeof(u_int16_t)) /* CTA_ZONE|CTA_TUPLE_ZONE */
+ #endif
+@@ -2465,6 +2546,12 @@ static int __ctnetlink_glue_build(struct sk_buff *skb, struct nf_conn *ct)
+ 	if (ct->mark && ctnetlink_dump_mark(skb, ct) < 0)
+ 		goto nla_put_failure;
+ #endif
++
++#ifdef CONFIG_NF_CONNTRACK_AVASTMARK
++	if (ct->avastmark && ctnetlink_dump_avastmark(skb, ct) < 0)
++		goto nla_put_failure;
++#endif
++
+ 	if (ctnetlink_dump_labels(skb, ct) < 0)
+ 		goto nla_put_failure;
+ 	return 0;
+@@ -2552,6 +2639,12 @@ ctnetlink_glue_parse_ct(const struct nlattr *cda[], struct nf_conn *ct)
+ 		ctnetlink_change_mark(ct, cda);
+ 	}
+ #endif
++
++#if defined(CONFIG_NF_CONNTRACK_AVASTMARK)
++	if (cda[CTA_AVASTMARK]) {
++		ctnetlink_change_avastmark(ct, cda);
++	}
++#endif
+ 	return 0;
+ }
+ 
+diff --git a/net/netfilter/nf_conntrack_standalone.c b/net/netfilter/nf_conntrack_standalone.c
+index 4912069627b6..8620fc48266f 100644
+--- a/net/netfilter/nf_conntrack_standalone.c
++++ b/net/netfilter/nf_conntrack_standalone.c
+@@ -360,6 +360,10 @@ static int ct_seq_show(struct seq_file *s, void *v)
+ 	seq_printf(s, "mark=%u ", ct->mark);
+ #endif
+ 
++#if defined(CONFIG_NF_CONNTRACK_AVASTMARK)
++	seq_printf(s, "avastmark=%u ", ct->avastmark);
++#endif
++
+ 	ct_show_secctx(s, ct);
+ 	ct_show_zone(s, ct, NF_CT_DEFAULT_ZONE_DIR);
+ 	ct_show_delta_time(s, ct);
+diff --git a/net/netfilter/nfnetlink_log.c b/net/netfilter/nfnetlink_log.c
+index 0ba020ca38e6..7a38d7ca5876 100644
+--- a/net/netfilter/nfnetlink_log.c
++++ b/net/netfilter/nfnetlink_log.c
+@@ -557,6 +557,12 @@ __build_packet_message(struct nfnl_log_net *log,
+ 	    nla_put_be32(inst->skb, NFULA_MARK, htonl(skb->mark)))
+ 		goto nla_put_failure;
+ 
++#ifdef CONFIG_NF_CONNTRACK_AVASTMARK
++	if (skb->avastmark &&
++	    nla_put_be32(inst->skb, NFULA_AVASTMARK, htonl(skb->avastmark)))
++		goto nla_put_failure;
++#endif
++
+ 	if (indev && skb->dev &&
+ 	    skb->mac_header != skb->network_header) {
+ 		struct nfulnl_msg_packet_hw phw;
+diff --git a/net/netfilter/nfnetlink_queue.c b/net/netfilter/nfnetlink_queue.c
+index feabdfb22920..3ea14ad1e9fa 100644
+--- a/net/netfilter/nfnetlink_queue.c
++++ b/net/netfilter/nfnetlink_queue.c
+@@ -403,6 +403,9 @@ nfqnl_build_packet_message(struct net *net, struct nfqnl_instance *queue,
+ 		+ nla_total_size(sizeof(u_int32_t))	/* ifindex */
+ #endif
+ 		+ nla_total_size(sizeof(u_int32_t))	/* mark */
++#if IS_ENABLED(CONFIG_NF_CONNTRACK_AVASTMARK)
++		+ nla_total_size(sizeof(u_int32_t))	/* avastmark */
++#endif
+ 		+ nla_total_size(sizeof(struct nfqnl_msg_packet_hw))
+ 		+ nla_total_size(sizeof(u_int32_t))	/* skbinfo */
+ 		+ nla_total_size(sizeof(u_int32_t));	/* cap_len */
+@@ -561,6 +564,12 @@ nfqnl_build_packet_message(struct net *net, struct nfqnl_instance *queue,
+ 	    nla_put_be32(skb, NFQA_MARK, htonl(entskb->mark)))
+ 		goto nla_put_failure;
+ 
++#if IS_ENABLED(CONFIG_NF_CONNTRACK_AVASTMARK)
++	if (entskb->avastmark &&
++	    nla_put_be32(skb, NFQA_AVASTMARK, htonl(entskb->avastmark)))
++		goto nla_put_failure;
++#endif
++
+ 	if (indev && entskb->dev &&
+ 	    entskb->mac_header != entskb->network_header) {
+ 		struct nfqnl_msg_packet_hw phw;
+@@ -1013,11 +1022,13 @@ static const struct nla_policy nfqa_verdict_policy[NFQA_MAX+1] = {
+ 	[NFQA_CT]		= { .type = NLA_UNSPEC },
+ 	[NFQA_EXP]		= { .type = NLA_UNSPEC },
+ 	[NFQA_VLAN]		= { .type = NLA_NESTED },
++	[NFQA_AVASTMARK]	= { .type = NLA_U32 },
+ };
+ 
+ static const struct nla_policy nfqa_verdict_batch_policy[NFQA_MAX+1] = {
+ 	[NFQA_VERDICT_HDR]	= { .len = sizeof(struct nfqnl_msg_verdict_hdr) },
+ 	[NFQA_MARK]		= { .type = NLA_U32 },
++	[NFQA_AVASTMARK]	= { .type = NLA_U32 },
+ };
+ 
+ static struct nfqnl_instance *
+@@ -1100,6 +1111,10 @@ static int nfqnl_recv_verdict_batch(struct net *net, struct sock *ctnl,
+ 	list_for_each_entry_safe(entry, tmp, &batch_list, list) {
+ 		if (nfqa[NFQA_MARK])
+ 			entry->skb->mark = ntohl(nla_get_be32(nfqa[NFQA_MARK]));
++#ifdef CONFIG_NF_CONNTRACK_AVASTMARK
++		if (nfqa[NFQA_AVASTMARK])
++			entry->skb->avastmark = ntohl(nla_get_be32(nfqa[NFQA_AVASTMARK]));
++#endif
+ 
+ 		nfqnl_reinject(entry, verdict);
+ 	}
+@@ -1225,6 +1240,10 @@ static int nfqnl_recv_verdict(struct net *net, struct sock *ctnl,
+ 
+ 	if (nfqa[NFQA_MARK])
+ 		entry->skb->mark = ntohl(nla_get_be32(nfqa[NFQA_MARK]));
++#ifdef CONFIG_NF_CONNTRACK_AVASTMARK
++	if (nfqa[NFQA_AVASTMARK])
++		entry->skb->avastmark = ntohl(nla_get_be32(nfqa[NFQA_AVASTMARK]));
++#endif
+ 
+ 	nfqnl_reinject(entry, verdict);
+ 	return 0;
+diff --git a/net/netfilter/xt_avastmark.c b/net/netfilter/xt_avastmark.c
+new file mode 100644
+index 000000000000..e4293163eeb8
+--- /dev/null
++++ b/net/netfilter/xt_avastmark.c
+@@ -0,0 +1,85 @@
++/*
++ *	xt_avastmark - Netfilter module to match NFAVASTMARK value
++ *
++ *	(C) 1999-2001 Marc Boucher <marc@mbsi.ca>
++ *	Copyright © CC Computer Consultants GmbH, 2007 - 2008
++ *	Jan Engelhardt <jengelh@medozas.de>
++ *
++ *	This program is free software; you can redistribute it and/or modify
++ *	it under the terms of the GNU General Public License version 2 as
++ *	published by the Free Software Foundation.
++ */
++
++#include <linux/module.h>
++#include <linux/skbuff.h>
++
++#include <linux/netfilter/xt_mark.h>
++#include <linux/netfilter/x_tables.h>
++
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("Marc Boucher <marc@mbsi.ca>");
++MODULE_DESCRIPTION("Xtables: packet avastmark operations");
++MODULE_ALIAS("ipt_avastmark");
++MODULE_ALIAS("ip6t_avastmark");
++MODULE_ALIAS("ipt_AVASTMARK");
++MODULE_ALIAS("ip6t_AVASTMARK");
++MODULE_ALIAS("arpt_AVASTMARK");
++
++static unsigned int
++mark_tg(struct sk_buff *skb, const struct xt_action_param *par)
++{
++	const struct xt_mark_tginfo2 *info = par->targinfo;
++
++	skb->avastmark = (skb->avastmark & ~info->mask) ^ info->mark;
++	return XT_CONTINUE;
++}
++
++static bool
++mark_mt(const struct sk_buff *skb, struct xt_action_param *par)
++{
++	const struct xt_mark_mtinfo1 *info = par->matchinfo;
++
++	return ((skb->avastmark & info->mask) == info->mark) ^ info->invert;
++}
++
++static struct xt_target mark_tg_reg __read_mostly = {
++	.name           = "AVASTMARK",
++	.revision       = 2,
++	.family         = NFPROTO_UNSPEC,
++	.target         = mark_tg,
++	.targetsize     = sizeof(struct xt_mark_tginfo2),
++	.me             = THIS_MODULE,
++};
++
++static struct xt_match mark_mt_reg __read_mostly = {
++	.name           = "avastmark",
++	.revision       = 1,
++	.family         = NFPROTO_UNSPEC,
++	.match          = mark_mt,
++	.matchsize      = sizeof(struct xt_mark_mtinfo1),
++	.me             = THIS_MODULE,
++};
++
++static int __init mark_mt_init(void)
++{
++	int ret;
++
++	ret = xt_register_target(&mark_tg_reg);
++	if (ret < 0)
++		return ret;
++	ret = xt_register_match(&mark_mt_reg);
++	if (ret < 0) {
++		xt_unregister_target(&mark_tg_reg);
++		return ret;
++	}
++	return 0;
++}
++
++static void __exit mark_mt_exit(void)
++{
++	xt_unregister_match(&mark_mt_reg);
++	xt_unregister_target(&mark_tg_reg);
++}
++
++module_init(mark_mt_init);
++module_exit(mark_mt_exit);
+diff --git a/net/netfilter/xt_connavastmark.c b/net/netfilter/xt_connavastmark.c
+new file mode 100644
+index 000000000000..500c8c344395
+--- /dev/null
++++ b/net/netfilter/xt_connavastmark.c
+@@ -0,0 +1,166 @@
++/*
++ *	xt_connavastmark - Netfilter module to operate on connection avastmarks
++ *
++ *	Copyright (C) 2002,2004 MARA Systems AB <http://www.marasystems.com>
++ *	by Henrik Nordstrom <hno@marasystems.com>
++ *	Copyright © CC Computer Consultants GmbH, 2007 - 2008
++ *	Jan Engelhardt <jengelh@medozas.de>
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include <linux/module.h>
++#include <linux/skbuff.h>
++#include <net/netfilter/nf_conntrack.h>
++#include <net/netfilter/nf_conntrack_ecache.h>
++#include <linux/netfilter/x_tables.h>
++#include <linux/netfilter/xt_connmark.h>
++
++MODULE_AUTHOR("Henrik Nordstrom <hno@marasystems.com>");
++MODULE_DESCRIPTION("Xtables: connection avastmark operations");
++MODULE_LICENSE("GPL");
++MODULE_ALIAS("ipt_CONNAVASTMARK");
++MODULE_ALIAS("ip6t_CONNAVASTMARK");
++MODULE_ALIAS("ipt_connavastmark");
++MODULE_ALIAS("ip6t_connavastmark");
++
++static unsigned int
++connmark_tg(struct sk_buff *skb, const struct xt_action_param *par)
++{
++	const struct xt_connmark_tginfo1 *info = par->targinfo;
++	enum ip_conntrack_info ctinfo;
++	struct nf_conn *ct;
++	u_int32_t newmark;
++
++	ct = nf_ct_get(skb, &ctinfo);
++	if (ct == NULL)
++		return XT_CONTINUE;
++
++	switch (info->mode) {
++	case XT_CONNMARK_SET:
++		newmark = (ct->avastmark & ~info->ctmask) ^ info->ctmark;
++		if (ct->avastmark != newmark) {
++			ct->avastmark = newmark;
++			nf_conntrack_event_cache(IPCT_MARK, ct);
++		}
++		break;
++	case XT_CONNMARK_SAVE:
++		newmark = (ct->avastmark & ~info->ctmask) ^
++		          (skb->avastmark & info->nfmask);
++		if (ct->avastmark != newmark) {
++			ct->avastmark = newmark;
++			nf_conntrack_event_cache(IPCT_MARK, ct);
++		}
++		break;
++	case XT_CONNMARK_RESTORE:
++		newmark = (skb->avastmark & ~info->nfmask) ^
++		          (ct->avastmark & info->ctmask);
++		skb->avastmark = newmark;
++		break;
++	}
++
++	return XT_CONTINUE;
++}
++
++static int connmark_tg_check(const struct xt_tgchk_param *par)
++{
++	int ret;
++
++	ret = nf_ct_netns_get(par->net, par->family);
++	if (ret < 0)
++		pr_info("cannot load conntrack support for proto=%u\n",
++			par->family);
++	return ret;
++}
++
++static void connmark_tg_destroy(const struct xt_tgdtor_param *par)
++{
++	nf_ct_netns_put(par->net, par->family);
++}
++
++static bool
++connmark_mt(const struct sk_buff *skb, struct xt_action_param *par)
++{
++	const struct xt_connmark_mtinfo1 *info = par->matchinfo;
++	enum ip_conntrack_info ctinfo;
++	const struct nf_conn *ct;
++
++	ct = nf_ct_get(skb, &ctinfo);
++	if (ct == NULL)
++		return false;
++
++	return ((ct->avastmark & info->mask) == info->mark) ^ info->invert;
++}
++
++static int connmark_mt_check(const struct xt_mtchk_param *par)
++{
++	int ret;
++
++	ret = nf_ct_netns_get(par->net, par->family);
++	if (ret < 0)
++		pr_info("cannot load conntrack support for proto=%u\n",
++			par->family);
++	return ret;
++}
++
++static void connmark_mt_destroy(const struct xt_mtdtor_param *par)
++{
++	nf_ct_netns_put(par->net, par->family);
++}
++
++static struct xt_target connmark_tg_reg __read_mostly = {
++	.name           = "CONNAVASTMARK",
++	.revision       = 1,
++	.family         = NFPROTO_UNSPEC,
++	.checkentry     = connmark_tg_check,
++	.target         = connmark_tg,
++	.targetsize     = sizeof(struct xt_connmark_tginfo1),
++	.destroy        = connmark_tg_destroy,
++	.me             = THIS_MODULE,
++};
++
++static struct xt_match connmark_mt_reg __read_mostly = {
++	.name           = "connavastmark",
++	.revision       = 1,
++	.family         = NFPROTO_UNSPEC,
++	.checkentry     = connmark_mt_check,
++	.match          = connmark_mt,
++	.matchsize      = sizeof(struct xt_connmark_mtinfo1),
++	.destroy        = connmark_mt_destroy,
++	.me             = THIS_MODULE,
++};
++
++static int __init connmark_mt_init(void)
++{
++	int ret;
++
++	ret = xt_register_target(&connmark_tg_reg);
++	if (ret < 0)
++		return ret;
++	ret = xt_register_match(&connmark_mt_reg);
++	if (ret < 0) {
++		xt_unregister_target(&connmark_tg_reg);
++		return ret;
++	}
++	return 0;
++}
++
++static void __exit connmark_mt_exit(void)
++{
++	xt_unregister_match(&connmark_mt_reg);
++	xt_unregister_target(&connmark_tg_reg);
++}
++
++module_init(connmark_mt_init);
++module_exit(connmark_mt_exit);

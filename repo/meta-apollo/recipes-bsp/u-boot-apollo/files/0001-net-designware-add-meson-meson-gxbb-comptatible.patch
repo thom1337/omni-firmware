@@ -1,0 +1,24 @@
+From 92922ce3cfa000179841759792ce17ebabda09b7 Mon Sep 17 00:00:00 2001
+From: Neil Armstrong <narmstrong@baylibre.com>
+Date: Mon, 10 Sep 2018 16:44:14 +0200
+Subject: [PATCH 01/55] net: designware: add meson meson gxbb comptatible
+
+---
+ drivers/net/designware.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/drivers/net/designware.c b/drivers/net/designware.c
+index 19db0a8114..cdcc03f45e 100644
+--- a/drivers/net/designware.c
++++ b/drivers/net/designware.c
+@@ -838,6 +838,7 @@ static const struct udevice_id designware_eth_ids[] = {
+ 	{ .compatible = "altr,socfpga-stmmac" },
+ 	{ .compatible = "amlogic,meson6-dwmac" },
+ 	{ .compatible = "amlogic,meson-gx-dwmac" },
++	{ .compatible = "amlogic,meson-gxbb-dwmac" },
+ 	{ .compatible = "st,stm32-dwmac" },
+ 	{ }
+ };
+-- 
+2.19.1
+

@@ -1,0 +1,495 @@
+From b6e3ec3c1474094ce8ddffafe4cc791cebf98254 Mon Sep 17 00:00:00 2001
+From: Vladyslav Movchan <vladyslav.movchan@avast.com>
+Date: Thu, 24 Sep 2020 12:16:03 +0200
+Subject: [PATCH] Add avastmark support
+
+---
+ include/internal/object.h                     |  5 +-
+ .../libnetfilter_conntrack.h                  |  3 +
+ .../linux_nfnetlink_conntrack.h               |  2 +
+ src/conntrack/bsf.c                           | 60 +++++++++++++++++++
+ src/conntrack/build_mnl.c                     | 10 ++++
+ src/conntrack/compare.c                       | 11 ++++
+ src/conntrack/copy.c                          |  7 +++
+ src/conntrack/filter.c                        | 13 ++++
+ src/conntrack/filter_dump.c                   | 17 ++++++
+ src/conntrack/getter.c                        |  6 ++
+ src/conntrack/parse_mnl.c                     |  6 ++
+ src/conntrack/setter.c                        |  7 +++
+ src/conntrack/snprintf_default.c              | 11 ++++
+ src/conntrack/snprintf_xml.c                  |  7 +++
+ tests/test_api.c                              |  1 +
+ utils/conntrack_dump_filter.c                 |  6 ++
+ 16 files changed, 171 insertions(+), 1 deletion(-)
+
+diff --git a/include/internal/object.h b/include/internal/object.h
+index 3f6904f..3f7b6c4 100644
+--- a/include/internal/object.h
++++ b/include/internal/object.h
+@@ -162,6 +162,7 @@ struct nf_conntrack {
+ 
+ 	uint32_t 	timeout;
+ 	uint32_t	mark;
++	uint32_t	avastmark;
+ 	uint32_t	secmark;
+ 	uint32_t 	status;
+ 	uint32_t	use;
+@@ -272,11 +273,12 @@ struct nfct_filter {
+ 	} l3proto_ipv6[2][__FILTER_IPV6_MAX];
+ 
+ 	uint32_t 		mark_elems;
++	uint32_t 		avastmark_elems;
+ 	struct {
+ #define __FILTER_MARK_MAX	127
+ 		uint32_t 	val;
+ 		uint32_t 	mask;
+-	} mark[__FILTER_MARK_MAX];
++	} mark[__FILTER_MARK_MAX], avastmark[__FILTER_MARK_MAX];
+ 
+ 	uint32_t 		set[1];
+ };
+@@ -287,6 +289,7 @@ struct nfct_filter {
+ 
+ struct nfct_filter_dump {
+ 	struct nfct_filter_dump_mark	mark;
++	struct nfct_filter_dump_mark	avastmark;
+ 	uint8_t				l3num;
+ 	uint32_t			set;
+ };
+diff --git a/include/libnetfilter_conntrack/libnetfilter_conntrack.h b/include/libnetfilter_conntrack/libnetfilter_conntrack.h
+index c5c6b61..fa87e56 100644
+--- a/include/libnetfilter_conntrack/libnetfilter_conntrack.h
++++ b/include/libnetfilter_conntrack/libnetfilter_conntrack.h
+@@ -144,6 +144,7 @@ enum nf_conntrack_attr {
+ 	ATTR_SYNPROXY_ISN,			/* u32 bits */
+ 	ATTR_SYNPROXY_ITS,			/* u32 bits */
+ 	ATTR_SYNPROXY_TSOFF,			/* u32 bits */
++	ATTR_AVASTMARK,				/* u32 bits */
+ 	ATTR_MAX
+ };
+ 
+@@ -509,6 +510,7 @@ enum nfct_filter_attr {
+ 	NFCT_FILTER_SRC_IPV6,		/* struct nfct_filter_ipv6 */
+ 	NFCT_FILTER_DST_IPV6,		/* struct nfct_filter_ipv6 */
+ 	NFCT_FILTER_MARK,		/* struct nfct_filter_dump_mark */
++	NFCT_FILTER_AVASTMARK,		/* struct nfct_filter_dump_mark */
+ 	NFCT_FILTER_MAX
+ };
+ 
+@@ -545,6 +547,7 @@ struct nfct_filter_dump_mark {
+ enum nfct_filter_dump_attr {
+ 	NFCT_FILTER_DUMP_MARK = 0,	/* struct nfct_filter_dump_mark */
+ 	NFCT_FILTER_DUMP_L3NUM,		/* uint8_t */
++	NFCT_FILTER_DUMP_AVASTMARK,	/* struct nfct_filter_dump_mark */
+ 	NFCT_FILTER_DUMP_MAX
+ };
+ 
+diff --git a/include/libnetfilter_conntrack/linux_nfnetlink_conntrack.h b/include/libnetfilter_conntrack/linux_nfnetlink_conntrack.h
+index aa45723..fdb7133 100644
+--- a/include/libnetfilter_conntrack/linux_nfnetlink_conntrack.h
++++ b/include/libnetfilter_conntrack/linux_nfnetlink_conntrack.h
+@@ -58,6 +58,8 @@ enum ctattr_type {
+ 	CTA_LABELS,
+ 	CTA_LABELS_MASK,
+ 	CTA_SYNPROXY,
++	CTA_AVASTMARK,
++	CTA_AVASTMARK_MASK,
+ 	__CTA_MAX
+ };
+ #define CTA_MAX (__CTA_MAX - 1)
+diff --git a/src/conntrack/bsf.c b/src/conntrack/bsf.c
+index 1549815..996564f 100644
+--- a/src/conntrack/bsf.c
++++ b/src/conntrack/bsf.c
+@@ -733,6 +733,63 @@ bsf_add_mark_filter(const struct nfct_filter *f, struct sock_filter *this)
+ 	return j;
+ }
+ 
++static int
++bsf_add_avastmark_filter(const struct nfct_filter *f, struct sock_filter *this)
++{
++	unsigned int i, j;
++	unsigned int jt;
++	struct stack *s;
++	struct jump jmp;
++	struct sock_filter __code = {
++		/* if (A == 0) skip next two */
++		.code = BPF_JMP|BPF_JEQ|BPF_K,
++		.k = 0,
++		.jt = 2,
++		.jf = 0,
++	};
++
++	/* nothing to filter, skip */
++	if (f->avastmark_elems == 0)
++		return 0;
++
++	/* XXX: see bsf_add_addr_ipv4_filter() */
++	s = stack_create(sizeof(struct jump), 3 + 127);
++	if (s == NULL) {
++		errno = ENOMEM;
++		return -1;
++	}
++
++	jt = 1;
++	j = 0;
++	j += nfct_bsf_load_payload_offset(this, j);	/* A = nla header offset 		*/
++	j += nfct_bsf_find_attr(this, CTA_AVASTMARK, j);	/* A = CTA_AVASTMARK offset, started from A	*/
++	memcpy(&this[j], &__code, sizeof(__code));	/* if A == 0 skip next two op		*/
++	j += NEW_POS(__code);
++	j += nfct_bsf_x_equal_a(this, j);		/* X = A <CTA_AVASTMARK offset>		*/
++	j += nfct_bsf_load_attr(this, BPF_W, j);	/* A = skb->data[X:X + BPF_W]		*/
++	j += nfct_bsf_x_equal_a(this, j);		/* X = A <CTA_AVASTMARK value>		*/
++
++	for (i = 0; i < f->avastmark_elems; i++) {
++		int avastmark = f->avastmark[i].val & f->avastmark[i].mask;
++
++		j += nfct_bsf_alu_and(this, f->avastmark[i].mask, j);
++		j += nfct_bsf_cmp_k_stack(this, avastmark, jt - j, j, s);
++		j += nfct_bsf_a_equal_x(this, j);
++	}
++
++	while (stack_pop(s, &jmp) != -1)
++		this[jmp.line].jt += jmp.jt + j;
++
++	if (f->logic[NFCT_FILTER_AVASTMARK] == NFCT_FILTER_LOGIC_NEGATIVE)
++		j += nfct_bsf_jump_to(this, 1, j);
++
++	j += nfct_bsf_ret_verdict(this, NFCT_FILTER_REJECT, j);
++
++	stack_destroy(s);
++
++	return j;
++}
++
+ /* this buffer must be big enough to store all the autogenerated lines */
+ #define BSF_BUFFER_SIZE 	2048
+ 
+@@ -769,6 +826,9 @@ int __setup_netlink_socket_filter(int fd, struct nfct_filter *f)
+ 	j += bsf_add_mark_filter(f, &bsf[j]);
+ 	show_filter(bsf, from, j, "---- check mark ----");
+ 	from = j;
++	j += bsf_add_avastmark_filter(f, &bsf[j]);
++	show_filter(bsf, from, j, "---- check avastmark ----");
++	from = j;
+ 
+ 	/* nothing to filter, skip */
+ 	if (j == 0)
+diff --git a/src/conntrack/build_mnl.c b/src/conntrack/build_mnl.c
+index d9ad268..2db6cc9 100644
+--- a/src/conntrack/build_mnl.c
++++ b/src/conntrack/build_mnl.c
+@@ -394,6 +394,13 @@ nfct_build_mark(struct nlmsghdr *nlh, const struct nf_conntrack *ct)
+ 	return 0;
+ }
+ 
++static int
++nfct_build_avastmark(struct nlmsghdr *nlh, const struct nf_conntrack *ct)
++{
++	mnl_attr_put_u32(nlh, CTA_AVASTMARK, htonl(ct->avastmark));
++	return 0;
++}
++
+ static int
+ nfct_build_secmark(struct nlmsghdr *nlh, const struct nf_conntrack *ct)
+ {
+@@ -538,6 +545,9 @@ nfct_nlmsg_build(struct nlmsghdr *nlh, const struct nf_conntrack *ct)
+ 	if (test_bit(ATTR_MARK, ct->head.set))
+ 		nfct_build_mark(nlh, ct);
+ 
++	if (test_bit(ATTR_AVASTMARK, ct->head.set))
++		nfct_build_avastmark(nlh, ct);
++
+ 	if (test_bit(ATTR_SECMARK, ct->head.set))
+ 		nfct_build_secmark(nlh, ct);
+ 
+diff --git a/src/conntrack/compare.c b/src/conntrack/compare.c
+index 8b2f3cb..b4da45a 100644
+--- a/src/conntrack/compare.c
++++ b/src/conntrack/compare.c
+@@ -318,6 +318,15 @@ cmp_mark(const struct nf_conntrack *ct1,
+ 	       nfct_get_attr_u32(ct2, ATTR_MARK);
+ }
+ 
++static int
++cmp_avastmark(const struct nf_conntrack *ct1,
++	 const struct nf_conntrack *ct2,
++	 unsigned int flags)
++{
++	return nfct_get_attr_u32(ct1, ATTR_AVASTMARK) ==
++	       nfct_get_attr_u32(ct2, ATTR_AVASTMARK);
++}
++
+ static int 
+ cmp_timeout(const struct nf_conntrack *ct1,
+ 	    const struct nf_conntrack *ct2,
+@@ -448,6 +457,8 @@ static int cmp_meta(const struct nf_conntrack *ct1,
+ 		return 0;
+ 	if (!__cmp(ATTR_MARK, ct1, ct2, flags, cmp_mark, false))
+ 		return 0;
++	if (!__cmp(ATTR_AVASTMARK, ct1, ct2, flags, cmp_avastmark, false))
++		return 0;
+ 	if (!__cmp(ATTR_TIMEOUT, ct1, ct2, flags, cmp_timeout, true))
+ 		return 0;
+ 	if (!__cmp(ATTR_STATUS, ct1, ct2, flags, cmp_status, true))
+diff --git a/src/conntrack/copy.c b/src/conntrack/copy.c
+index eca202e..480b090 100644
+--- a/src/conntrack/copy.c
++++ b/src/conntrack/copy.c
+@@ -334,6 +334,12 @@ static void copy_attr_mark(struct nf_conntrack *dest,
+ 	dest->mark = orig->mark;
+ }
+ 
++static void copy_attr_avastmark(struct nf_conntrack *dest,
++			   const struct nf_conntrack *orig)
++{
++	dest->avastmark = orig->avastmark;
++}
++
+ static void copy_attr_secmark(struct nf_conntrack *dest,
+ 			      const struct nf_conntrack *orig)
+ {
+@@ -543,6 +549,7 @@ const copy_attr copy_attr_array[ATTR_MAX] = {
+ 	[ATTR_DNAT_PORT]		= copy_attr_dnat_port,
+ 	[ATTR_TIMEOUT]			= copy_attr_timeout,
+ 	[ATTR_MARK]			= copy_attr_mark,
++	[ATTR_AVASTMARK]		= copy_attr_avastmark,
+ 	[ATTR_ORIG_COUNTER_PACKETS] 	= copy_attr_orig_counter_packets,
+ 	[ATTR_ORIG_COUNTER_BYTES]	= copy_attr_orig_counter_bytes,
+ 	[ATTR_REPL_COUNTER_PACKETS]	= copy_attr_repl_counter_packets,
+diff --git a/src/conntrack/filter.c b/src/conntrack/filter.c
+index 4cbc116..5a5e18f 100644
+--- a/src/conntrack/filter.c
++++ b/src/conntrack/filter.c
+@@ -91,6 +91,18 @@ static void filter_attr_mark(struct nfct_filter *filter, const void *value)
+ 	filter->mark_elems++;
+ }
+ 
++static void filter_attr_avastmark(struct nfct_filter *filter, const void *value)
++{
++	const struct nfct_filter_dump_mark *this = value;
++
++	if (filter->avastmark_elems >= __FILTER_MARK_MAX)
++		return;
++
++	filter->avastmark[filter->avastmark_elems].val = this->val;
++	filter->avastmark[filter->avastmark_elems].mask = this->mask;
++	filter->avastmark_elems++;
++}
++
+ const filter_attr filter_attr_array[NFCT_FILTER_MAX] = {
+ 	[NFCT_FILTER_L4PROTO]		= filter_attr_l4proto,
+ 	[NFCT_FILTER_L4PROTO_STATE]	= filter_attr_l4proto_state,
+@@ -99,4 +111,5 @@ const filter_attr filter_attr_array[NFCT_FILTER_MAX] = {
+ 	[NFCT_FILTER_SRC_IPV6]		= filter_attr_src_ipv6,
+ 	[NFCT_FILTER_DST_IPV6]		= filter_attr_dst_ipv6,
+ 	[NFCT_FILTER_MARK]		= filter_attr_mark,
++	[NFCT_FILTER_AVASTMARK]		= filter_attr_avastmark,
+ };
+diff --git a/src/conntrack/filter_dump.c b/src/conntrack/filter_dump.c
+index 158b4cb..8f37689 100644
+--- a/src/conntrack/filter_dump.c
++++ b/src/conntrack/filter_dump.c
+@@ -19,6 +19,16 @@ set_filter_dump_attr_mark(struct nfct_filter_dump *filter_dump,
+ 	filter_dump->mark.mask = this->mask;
+ }
+ 
++static void
++set_filter_dump_attr_avastmark(struct nfct_filter_dump *filter_dump,
++			  const void *value)
++{
++	const struct nfct_filter_dump_mark *this = value;
++
++	filter_dump->avastmark.val = this->val;
++	filter_dump->avastmark.mask = this->mask;
++}
++
+ static void
+ set_filter_dump_attr_family(struct nfct_filter_dump *filter_dump,
+ 			    const void *value)
+@@ -29,6 +39,7 @@ set_filter_dump_attr_family(struct nfct_filter_dump *filter_dump,
+ const set_filter_dump_attr set_filter_dump_attr_array[NFCT_FILTER_DUMP_MAX] = {
+ 	[NFCT_FILTER_DUMP_MARK]		= set_filter_dump_attr_mark,
+ 	[NFCT_FILTER_DUMP_L3NUM]	= set_filter_dump_attr_family,
++	[NFCT_FILTER_DUMP_AVASTMARK]	= set_filter_dump_attr_avastmark,
+ };
+ 
+ void __build_filter_dump(struct nfnlhdr *req, size_t size,
+@@ -40,6 +51,12 @@ void __build_filter_dump(struct nfnlhdr *req, size_t size,
+ 		nfnl_addattr32(&req->nlh, size, CTA_MARK_MASK,
+ 				htonl(filter_dump->mark.mask));
+ 	}
++	if (filter_dump->set & (1 << NFCT_FILTER_DUMP_AVASTMARK)) {
++		nfnl_addattr32(&req->nlh, size, CTA_AVASTMARK,
++				htonl(filter_dump->avastmark.val));
++		nfnl_addattr32(&req->nlh, size, CTA_AVASTMARK_MASK,
++				htonl(filter_dump->avastmark.mask));
++	}
+ 	if (filter_dump->set & (1 << NFCT_FILTER_DUMP_L3NUM)) {
+ 		struct nfgenmsg *nfg = NLMSG_DATA(&req->nlh);
+ 		nfg->nfgen_family = filter_dump->l3num;
+diff --git a/src/conntrack/getter.c b/src/conntrack/getter.c
+index d1f9a5a..c8fb392 100644
+--- a/src/conntrack/getter.c
++++ b/src/conntrack/getter.c
+@@ -244,6 +244,11 @@ static const void *get_attr_mark(const struct nf_conntrack *ct)
+ 	return &ct->mark;
+ }
+ 
++static const void *get_attr_avastmark(const struct nf_conntrack *ct)
++{
++	return &ct->avastmark;
++}
++
+ static const void *get_attr_secmark(const struct nf_conntrack *ct)
+ {
+ 	return &ct->secmark;
+@@ -411,6 +416,7 @@ const get_attr get_attr_array[ATTR_MAX] = {
+ 	[ATTR_DNAT_PORT]		= get_attr_dnat_port,
+ 	[ATTR_TIMEOUT]			= get_attr_timeout,
+ 	[ATTR_MARK]			= get_attr_mark,
++	[ATTR_AVASTMARK]		= get_attr_avastmark,
+ 	[ATTR_ORIG_COUNTER_PACKETS] 	= get_attr_orig_counter_packets,
+ 	[ATTR_ORIG_COUNTER_BYTES]	= get_attr_orig_counter_bytes,
+ 	[ATTR_REPL_COUNTER_PACKETS]	= get_attr_repl_counter_packets,
+diff --git a/src/conntrack/parse_mnl.c b/src/conntrack/parse_mnl.c
+index 515deff..9c9a2a0 100644
+--- a/src/conntrack/parse_mnl.c
++++ b/src/conntrack/parse_mnl.c
+@@ -884,6 +884,7 @@ nfct_parse_conntrack_attr_cb(const struct nlattr *attr, void *data)
+ 	case CTA_STATUS:
+ 	case CTA_TIMEOUT:
+ 	case CTA_MARK:
++	case CTA_AVASTMARK:
+ 	case CTA_SECMARK:
+ 	case CTA_USE:
+ 	case CTA_ID:
+@@ -972,6 +973,11 @@ nfct_payload_parse(const void *payload, size_t payload_len,
+ 		set_bit(ATTR_MARK, ct->head.set);
+ 	}
+ 
++	if (tb[CTA_AVASTMARK]) {
++		ct->avastmark = ntohl(mnl_attr_get_u32(tb[CTA_AVASTMARK]));
++		set_bit(ATTR_AVASTMARK, ct->head.set);
++	}
++
+ 	if (tb[CTA_SECMARK]) {
+ 		ct->secmark = ntohl(mnl_attr_get_u32(tb[CTA_SECMARK]));
+ 		set_bit(ATTR_SECMARK, ct->head.set);
+diff --git a/src/conntrack/setter.c b/src/conntrack/setter.c
+index 7b96936..b52f6d0 100644
+--- a/src/conntrack/setter.c
++++ b/src/conntrack/setter.c
+@@ -284,6 +284,12 @@ set_attr_mark(struct nf_conntrack *ct, const void *value, size_t len)
+ 	ct->mark = *((uint32_t *) value);
+ }
+ 
++static void
++set_attr_avastmark(struct nf_conntrack *ct, const void *value, size_t len)
++{
++	ct->avastmark = *((uint32_t *) value);
++}
++
+ static void
+ set_attr_secmark(struct nf_conntrack *ct, const void *value, size_t len)
+ {
+@@ -515,6 +521,7 @@ const set_attr set_attr_array[ATTR_MAX] = {
+ 	[ATTR_DNAT_PORT]	= set_attr_dnat_port,
+ 	[ATTR_TIMEOUT]		= set_attr_timeout,
+ 	[ATTR_MARK]		= set_attr_mark,
++	[ATTR_AVASTMARK]	= set_attr_avastmark,
+ 	[ATTR_ORIG_COUNTER_PACKETS]	= set_attr_do_nothing,
+ 	[ATTR_REPL_COUNTER_PACKETS]	= set_attr_do_nothing,
+ 	[ATTR_ORIG_COUNTER_BYTES]	= set_attr_do_nothing,
+diff --git a/src/conntrack/snprintf_default.c b/src/conntrack/snprintf_default.c
+index 765ce72..06eebe2 100644
+--- a/src/conntrack/snprintf_default.c
++++ b/src/conntrack/snprintf_default.c
+@@ -220,6 +220,12 @@ __snprintf_mark(char *buf, unsigned int len, const struct nf_conntrack *ct)
+ 	return (snprintf(buf, len, "mark=%u ", ct->mark));
+ }
+ 
++static int
++__snprintf_avastmark(char *buf, unsigned int len, const struct nf_conntrack *ct)
++{
++	return (snprintf(buf, len, "avastmark=%u ", ct->avastmark));
++}
++
+ static int
+ __snprintf_secmark(char *buf, unsigned int len, const struct nf_conntrack *ct)
+ {
+@@ -449,6 +455,11 @@ int __snprintf_conntrack_default(char *buf,
+ 		BUFFER_SIZE(ret, size, len, offset);
+ 	}
+ 
++	if (test_bit(ATTR_AVASTMARK, ct->head.set)) {
++		ret = __snprintf_avastmark(buf+offset, len, ct);
++		BUFFER_SIZE(ret, size, len, offset);
++	}
++
+ 	if (test_bit(ATTR_SECMARK, ct->head.set)) {
+ 		ret = __snprintf_secmark(buf+offset, len, ct);
+ 		BUFFER_SIZE(ret, size, len, offset);
+diff --git a/src/conntrack/snprintf_xml.c b/src/conntrack/snprintf_xml.c
+index c3a836a..bbcb02a 100644
+--- a/src/conntrack/snprintf_xml.c
++++ b/src/conntrack/snprintf_xml.c
+@@ -416,6 +416,7 @@ int __snprintf_conntrack_xml(char *buf,
+ 	    test_bit(ATTR_DCCP_STATE, ct->head.set) ||
+ 	    test_bit(ATTR_TIMEOUT, ct->head.set) ||
+ 	    test_bit(ATTR_MARK, ct->head.set) ||
++	    test_bit(ATTR_AVASTMARK, ct->head.set) ||
+ 	    test_bit(ATTR_SECMARK, ct->head.set) ||
+ 	    test_bit(ATTR_ZONE, ct->head.set) ||
+ 	    test_bit(ATTR_USE, ct->head.set) ||
+@@ -464,6 +465,11 @@ int __snprintf_conntrack_xml(char *buf,
+ 		BUFFER_SIZE(ret, size, len, offset);
+ 	}
+ 
++	if (test_bit(ATTR_AVASTMARK, ct->head.set)) {
++		ret = snprintf(buf+offset, len, "<avastmark>%u</avastmark>", ct->avastmark);
++		BUFFER_SIZE(ret, size, len, offset);
++	}
++
+ 	if (map && test_bit(ATTR_CONNLABELS, ct->head.set)) {
+ 		ret = __snprintf_clabels_xml(buf+offset, len, ct, map);
+ 		BUFFER_SIZE(ret, size, len, offset);
+@@ -542,6 +548,7 @@ int __snprintf_conntrack_xml(char *buf,
+ 	    test_bit(ATTR_DCCP_STATE, ct->head.set) ||
+ 	    test_bit(ATTR_TIMEOUT, ct->head.set) ||
+ 	    test_bit(ATTR_MARK, ct->head.set) ||
++	    test_bit(ATTR_AVASTMARK, ct->head.set) ||
+ 	    test_bit(ATTR_SECMARK, ct->head.set) ||
+ 	    test_bit(ATTR_ZONE, ct->head.set) ||
+ 	    test_bit(ATTR_USE, ct->head.set) ||
+diff --git a/tests/test_api.c b/tests/test_api.c
+index 57fdb90..537c264 100644
+--- a/tests/test_api.c
++++ b/tests/test_api.c
+@@ -394,6 +394,7 @@ static void test_nfct_cmp_api(struct nf_conntrack *ct1, struct nf_conntrack *ct2
+ 	test_nfct_cmp_attr(ATTR_ORIG_ZONE);
+ 	test_nfct_cmp_attr(ATTR_REPL_ZONE);
+ 	test_nfct_cmp_attr(ATTR_MARK);
++	test_nfct_cmp_attr(ATTR_AVASTMARK);
+ 
+ 	assert(nfct_cmp(ct1, ct2, NFCT_CMP_ALL) == 1);
+ 	assert(nfct_cmp(ct1, ct2, NFCT_CMP_ALL|NFCT_CMP_STRICT) == 0);
+diff --git a/utils/conntrack_dump_filter.c b/utils/conntrack_dump_filter.c
+index 41e3f0c..7d7a0f4 100644
+--- a/utils/conntrack_dump_filter.c
++++ b/utils/conntrack_dump_filter.c
+@@ -36,8 +36,14 @@ int main(void)
+ 		.val = 1,
+ 		.mask = 0xffffffff,
+ 	};
++	struct nfct_filter_dump_mark filter_dump_avastmark = {
++		.val = 42,
++		.mask = 0xffffffff,
++	};
+ 	nfct_filter_dump_set_attr(filter_dump, NFCT_FILTER_DUMP_MARK,
+ 					&filter_dump_mark);
++	nfct_filter_dump_set_attr(filter_dump, NFCT_FILTER_DUMP_AVASTMARK,
++					&filter_dump_avastmark);
+ 	nfct_filter_dump_set_attr_u8(filter_dump, NFCT_FILTER_DUMP_L3NUM,
+ 					AF_INET);
+ 

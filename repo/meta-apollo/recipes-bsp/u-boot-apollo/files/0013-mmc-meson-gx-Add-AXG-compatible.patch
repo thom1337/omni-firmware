@@ -1,0 +1,24 @@
+From 077ba8d08495b75b307be7fe96497b2d7959a8af Mon Sep 17 00:00:00 2001
+From: Neil Armstrong <narmstrong@baylibre.com>
+Date: Mon, 10 Sep 2018 16:43:46 +0200
+Subject: [PATCH 13/55] mmc: meson-gx: Add AXG compatible
+
+---
+ drivers/mmc/meson_gx_mmc.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/drivers/mmc/meson_gx_mmc.c b/drivers/mmc/meson_gx_mmc.c
+index 332f1e12a5..767dfff805 100644
+--- a/drivers/mmc/meson_gx_mmc.c
++++ b/drivers/mmc/meson_gx_mmc.c
+@@ -278,6 +278,7 @@ int meson_mmc_bind(struct udevice *dev)
+ 
+ static const struct udevice_id meson_mmc_match[] = {
+ 	{ .compatible = "amlogic,meson-gx-mmc" },
++	{ .compatible = "amlogic,meson-axg-mmc" },
+ 	{ /* sentinel */ }
+ };
+ 
+-- 
+2.19.1
+

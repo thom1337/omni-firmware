@@ -1,0 +1,34 @@
+From 87e1c18b935b2ca628accb7ebcb1c4a69d14adaf Mon Sep 17 00:00:00 2001
+From: Neil Armstrong <narmstrong@baylibre.com>
+Date: Fri, 7 Sep 2018 17:25:32 +0200
+Subject: [PATCH 17/55] arm64: meson-axg: fixups for U-Boot
+
+---
+ arch/arm/dts/meson-axg.dtsi | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm/dts/meson-axg.dtsi b/arch/arm/dts/meson-axg.dtsi
+index 67d7115e4e..50530c43fe 100644
+--- a/arch/arm/dts/meson-axg.dtsi
++++ b/arch/arm/dts/meson-axg.dtsi
+@@ -306,7 +306,7 @@
+ 			ranges = <0x0 0x0 0x0 0xff63c000 0x0 0x1c00>;
+ 
+ 			sysctrl: system-controller@0 {
+-				compatible = "amlogic,meson-axg-hhi-sysctrl", "syscon", "simple-mfd";
++				compatible = "amlogic,meson-axg-hhi-sysctrl", "simple-mfd", "syscon";
+ 				reg = <0 0 0 0x400>;
+ 
+ 				clkc: clock-controller {
+@@ -1032,7 +1032,7 @@
+ 			ranges = <0x0 0x0 0x0 0xff800000 0x0 0x100000>;
+ 
+ 			sysctrl_AO: sys-ctrl@0 {
+-				compatible = "amlogic,meson-axg-ao-sysctrl", "syscon", "simple-mfd";
++				compatible = "amlogic,meson-axg-ao-sysctrl", "simple-mfd", "syscon";
+ 				reg =  <0x0 0x0 0x0 0x100>;
+ 
+ 				clkc_AO: clock-controller {
+-- 
+2.19.1
+

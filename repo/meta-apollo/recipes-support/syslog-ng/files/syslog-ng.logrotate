@@ -1,0 +1,37 @@
+# /etc/logrotate.d/syslog-ng
+
+/var/log/syslog
+{
+    size 3M
+    rotate 10
+    missingok
+    notifempty
+    compress
+    postrotate
+        /usr/bin/pkill -HUP syslog-ng 2> /dev/null || true
+    endscript
+}
+
+/data/log/kern.log
+{
+    size 3M
+    rotate 3
+    missingok
+    notifempty
+    compress
+    postrotate
+        /usr/bin/pkill -HUP syslog-ng 2> /dev/null || true
+    endscript
+}
+
+/var/log/auth.log
+{
+    size 100k
+    rotate 1
+    missingok
+    notifempty
+    compress
+    postrotate
+        /usr/bin/pkill -HUP syslog-ng 2> /dev/null || true
+    endscript
+}

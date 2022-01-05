@@ -1,0 +1,49 @@
+@version: 3.24
+#
+# Syslog-ng configuration file, compatible with default Debian syslogd
+# installation. Originally written by anonymous (I can't find his name)
+# Revised, and rewrited by me (SZALAY Attila <sasa@debian.org>)
+#
+# Move to 3.19
+#     Only change is to add dns_cache(no) to options to suppress initialization warning.
+#
+#     Joe Slater <joe.slater@windriver.com>
+
+# First, set some global options.
+options { chain_hostnames(off); flush_lines(0); use_dns(no); dns_cache(no); use_fqdn(no);
+	  owner("root"); group("root"); perm(0640); stats_freq(0);
+	  bad_hostname("^gconfd$");
+};
+
+########################
+# Sources
+########################
+# This is the default behavior of sysklogd package
+# Logs may come from unix stream, but not from another machine.
+#
+source s_src { systemd-syslog(); internal();
+       	     file("/proc/kmsg" program_override("kernel"));
+};
+
+# If you wish to get logs from remote machine you should uncomment
+# this and comment the above source line.
+#
+#source s_net { tcp(ip(127.0.0.1) port(1000) authentication(required) encrypt(allow)); };
+
+########################
+# Destinations
+########################
+# First some standard logfile
+#
+destination d_syslog { file("/var/log/syslog"); };
+
+########################
+# Filters
+########################
+# Here's come the filter options. With this rules, we can set which
+# message go where.
+
+########################
+# Log paths
+########################
+log { source(s_src); destination(d_syslog); };

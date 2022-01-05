@@ -1,0 +1,26 @@
+From 2aed283065dd68789d2e5cd30bc9117978e9d048 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Jan=20Kaisrl=C3=ADk?= <jan.kaisrlik@avast.com>
+Date: Thu, 8 Apr 2021 21:01:23 +0200
+Subject: [PATCH] replace sh with zsh for root
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Signed-off-by: Jan Kaisrlík <jan.kaisrlik@avast.com>
+---
+ passwd.master | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/passwd.master b/passwd.master
+index e1c32ff..c685d09 100644
+--- a/passwd.master
++++ b/passwd.master
+@@ -1,4 +1,4 @@
+-root::0:0:root:/root:/bin/sh
++root::0:0:root:/root:/bin/zsh
+ daemon:*:1:1:daemon:/usr/sbin:/bin/sh
+ bin:*:2:2:bin:/bin:/bin/sh
+ sys:*:3:3:sys:/dev:/bin/sh
+-- 
+2.6.5
+

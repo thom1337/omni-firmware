@@ -1,0 +1,48 @@
+From af01e54ac96fb0a18a9020a903c1f7df6d2f34d7 Mon Sep 17 00:00:00 2001
+From: Carlo Caione <ccaione@baylibre.com>
+Date: Thu, 15 Nov 2018 09:49:39 +0000
+Subject: [PATCH 34/55] mender: apollo: Move (again) env to the boot0 partition
+
+The mender-generated U-Boot configuration assumes that the U-Boot
+environment is always in the eMMC user area. For now we just stick to
+the previous decision to have it in the boot0 partition so we manually
+fix CONFIG_SYS_MMC_ENV_PART and remove the check.
+
+Signed-off-by: Carlo Caione <ccaione@baylibre.com>
+---
+ include/config_defaults.h | 2 +-
+ include/config_mender.h   | 8 --------
+ 2 files changed, 1 insertion(+), 9 deletions(-)
+
+diff --git a/include/config_defaults.h b/include/config_defaults.h
+index 39aa8435ac..e81f6467b7 100644
+--- a/include/config_defaults.h
++++ b/include/config_defaults.h
+@@ -24,4 +24,4 @@
+ #define CONFIG_ENV_OFFSET 0x0
+ #define CONFIG_ENV_OFFSET_REDUND 0x800000
+ #define CONFIG_SYS_MMC_ENV_DEV 0
+-#define CONFIG_SYS_MMC_ENV_PART 0
++#define CONFIG_SYS_MMC_ENV_PART 1
+diff --git a/include/config_mender.h b/include/config_mender.h
+index 3836a6ddd4..6beea14d98 100644
+--- a/include/config_mender.h
++++ b/include/config_mender.h
+@@ -75,14 +75,6 @@
+ # else
+ #  define CONFIG_SYS_MMC_ENV_DEV   MENDER_UBOOT_STORAGE_DEVICE
+ # endif
+-# ifdef CONFIG_SYS_MMC_ENV_PART
+-#  if CONFIG_SYS_MMC_ENV_PART != 0
+-#   error CONFIG_SYS_MMC_ENV_PART need to be set to 0. Make sure that: 1) All the instructions at docs.mender.io/devices/integrating-with-u-boot have been followed. 2) All required layers are included in bblayers.conf, including any board specific layers such as meta-mender-<board>
+-#  endif
+-# else
+-   /* Use MMC partition zero to select whole user area of memory card. */
+-#  define CONFIG_SYS_MMC_ENV_PART  0
+-# endif
+ #endif
+ 
+ #ifdef CONFIG_ENV_SIZE
+-- 
+2.19.1
+

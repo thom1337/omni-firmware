@@ -1,0 +1,24 @@
+From 3d99c43a3c1d6e5af70a73c4b0219fe0556de011 Mon Sep 17 00:00:00 2001
+From: Vladyslav Movchan <vladyslav.movchan@avast.com>
+Date: Mon, 29 Mar 2021 12:21:07 +0200
+Subject: [PATCH] Keep original name of shared library when both shared and
+ static versions are built
+
+Static Avast Agent already depends on libpugixml-static.a name, so it is
+not worth changing now.
+---
+ CMakeLists.txt | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index f043962..b80f0e4 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -47,6 +47,7 @@ endif()
+ if(BUILD_SHARED_AND_STATIC_LIBS)
+     add_library(pugixml-static STATIC ${HEADERS} ${SOURCES})
+     add_library(pugixml-shared SHARED ${HEADERS} ${SOURCES})
++    set_target_properties(pugixml-shared PROPERTIES OUTPUT_NAME pugixml)
+ else()
+   if(BUILD_SHARED_LIBS)
+     add_library(pugixml SHARED ${HEADERS} ${SOURCES})

@@ -1,0 +1,28 @@
+From 4174418c508c808b77a61346826611eacb151159 Mon Sep 17 00:00:00 2001
+From: Carlo Caione <ccaione@baylibre.com>
+Date: Tue, 20 Nov 2018 15:40:47 +0000
+Subject: [PATCH 42/55] recovery: apollo: Introduce check_reset_button
+
+To check the status of the GPIOAO_10 pin.
+
+Signed-off-by: Carlo Caione <ccaione@baylibre.com>
+---
+ include/env_mender.h | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/include/env_mender.h b/include/env_mender.h
+index 424e783b0a..8378383202 100644
+--- a/include/env_mender.h
++++ b/include/env_mender.h
+@@ -73,6 +73,8 @@
+                                                                         \
+     "mender_check_saveenv_canary=1\0"                                   \
+                                                                         \
++    "check_reset_button=gpio input aobus-banks10; test $? -eq 0;\0"     \
++                                                                        \
+     "mender_setup="                                                     \
+     "if test \"${mender_saveenv_canary}\" != \"1\"; then "              \
+     "env default -a; "                                                  \
+-- 
+2.19.1
+

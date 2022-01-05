@@ -1,0 +1,340 @@
+From 04893dbc3988d1e4c7d6f7538b37e3b49256ec6b Mon Sep 17 00:00:00 2001
+From: Jerome Brunet <jbrunet@baylibre.com>
+Date: Thu, 25 Oct 2018 16:41:37 +0200
+Subject: [PATCH 06/55] ARM: rework amlogic configuration
+
+Signed-off-by: Jerome Brunet <jbrunet@baylibre.com>
+---
+ arch/arm/mach-meson/Kconfig                   | 26 +++++++++++++++++--
+ board/amlogic/odroid-c2/Kconfig               | 12 ---------
+ board/amlogic/p212/Kconfig                    | 12 ---------
+ configs/khadas-vim_defconfig                  |  2 +-
+ configs/libretech-cc_defconfig                |  1 +
+ configs/nanopi-k2_defconfig                   |  1 -
+ configs/odroid-c2_defconfig                   |  1 -
+ configs/p212_defconfig                        |  1 -
+ include/configs/khadas-vim.h                  | 14 ----------
+ include/configs/libretech-cc.h                | 14 ----------
+ .../configs/{meson-gx-common.h => meson64.h}  | 25 ++++++++++--------
+ include/configs/nanopi-k2.h                   | 12 ---------
+ include/configs/odroid-c2.h                   | 12 ---------
+ include/configs/p212.h                        | 14 ----------
+ 14 files changed, 40 insertions(+), 107 deletions(-)
+ delete mode 100644 board/amlogic/odroid-c2/Kconfig
+ delete mode 100644 board/amlogic/p212/Kconfig
+ delete mode 100644 include/configs/khadas-vim.h
+ delete mode 100644 include/configs/libretech-cc.h
+ rename include/configs/{meson-gx-common.h => meson64.h} (80%)
+ delete mode 100644 include/configs/nanopi-k2.h
+ delete mode 100644 include/configs/odroid-c2.h
+ delete mode 100644 include/configs/p212.h
+
+diff --git a/arch/arm/mach-meson/Kconfig b/arch/arm/mach-meson/Kconfig
+index 385bbf5feb..06c16dd2fb 100644
+--- a/arch/arm/mach-meson/Kconfig
++++ b/arch/arm/mach-meson/Kconfig
+@@ -47,8 +47,30 @@ config SYS_SOC
+ config SYS_MALLOC_F_LEN
+ 	default 0x1000
+ 
+-source "board/amlogic/odroid-c2/Kconfig"
++config SYS_VENDOR
++	string "Vendor name"
++	default "amlogic"
++	help
++	  This option contains information about board name.
++	  Based on this option board/<CONFIG_SYS_VENDOR>/<CONFIG_SYS_BOARD> will
++	  be used.
++
++config SYS_BOARD
++	string "Board name"
++	default "odroid-c2" if TARGET_ODROID_C2
++	default "p212" if TARGET_P212
++	default ""
++	help
++	  This option contains information about board name.
++	  Based on this option board/<CONFIG_SYS_VENDOR>/<CONFIG_SYS_BOARD> will
++	  be used.
+ 
+-source "board/amlogic/p212/Kconfig"
++config SYS_CONFIG_NAME
++	string "Board configuration name"
++	default "meson64"
++	help
++	  This option contains information about board configuration name.
++	  Based on this option include/configs/<CONFIG_SYS_CONFIG_NAME>.h header
++	  will be used for board configuration.
+ 
+ endif
+diff --git a/board/amlogic/odroid-c2/Kconfig b/board/amlogic/odroid-c2/Kconfig
+deleted file mode 100644
+index 2b16889b07..0000000000
+--- a/board/amlogic/odroid-c2/Kconfig
++++ /dev/null
+@@ -1,12 +0,0 @@
+-if TARGET_ODROID_C2
+-
+-config SYS_BOARD
+-	default "odroid-c2"
+-
+-config SYS_VENDOR
+-	default "amlogic"
+-
+-config SYS_CONFIG_NAME
+-	default "odroid-c2"
+-
+-endif
+diff --git a/board/amlogic/p212/Kconfig b/board/amlogic/p212/Kconfig
+deleted file mode 100644
+index 720c92b1ee..0000000000
+--- a/board/amlogic/p212/Kconfig
++++ /dev/null
+@@ -1,12 +0,0 @@
+-if TARGET_P212
+-
+-config SYS_BOARD
+-	default "p212"
+-
+-config SYS_VENDOR
+-	default "amlogic"
+-
+-config SYS_CONFIG_NAME
+-	default "p212"
+-
+-endif
+diff --git a/configs/khadas-vim_defconfig b/configs/khadas-vim_defconfig
+index af30113760..998e153321 100644
+--- a/configs/khadas-vim_defconfig
++++ b/configs/khadas-vim_defconfig
+@@ -1,7 +1,6 @@
+ CONFIG_ARM=y
+ CONFIG_ARCH_MESON=y
+ CONFIG_SYS_TEXT_BASE=0x01000000
+-CONFIG_MESON_GXL=y
+ CONFIG_TARGET_P212=y
+ CONFIG_DEBUG_UART_BASE=0xc81004c0
+ CONFIG_DEBUG_UART_CLOCK=24000000
+@@ -37,6 +36,7 @@ CONFIG_PHY=y
+ CONFIG_MESON_GXL_USB_PHY=y
+ CONFIG_PINCTRL=y
+ CONFIG_PINCTRL_MESON_GXL=y
++CONFIG_DM_REGULATOR=y
+ CONFIG_DM_REGULATOR_FIXED=y
+ CONFIG_DM_RESET=y
+ CONFIG_DEBUG_UART_MESON=y
+diff --git a/configs/libretech-cc_defconfig b/configs/libretech-cc_defconfig
+index 7526516060..d48abfa3c6 100644
+--- a/configs/libretech-cc_defconfig
++++ b/configs/libretech-cc_defconfig
+@@ -37,6 +37,7 @@ CONFIG_PHY=y
+ CONFIG_MESON_GXL_USB_PHY=y
+ CONFIG_PINCTRL=y
+ CONFIG_PINCTRL_MESON_GXL=y
++CONFIG_DM_REGULATOR=y
+ CONFIG_DM_REGULATOR_FIXED=y
+ CONFIG_DM_RESET=y
+ CONFIG_DEBUG_UART_MESON=y
+diff --git a/configs/nanopi-k2_defconfig b/configs/nanopi-k2_defconfig
+index 01196d6655..84c7b9a6a5 100644
+--- a/configs/nanopi-k2_defconfig
++++ b/configs/nanopi-k2_defconfig
+@@ -1,7 +1,6 @@
+ CONFIG_ARM=y
+ CONFIG_ARCH_MESON=y
+ CONFIG_SYS_TEXT_BASE=0x01000000
+-CONFIG_MESON_GXBB=y
+ CONFIG_TARGET_ODROID_C2=y
+ CONFIG_DEBUG_UART_BASE=0xc81004c0
+ CONFIG_DEBUG_UART_CLOCK=24000000
+diff --git a/configs/odroid-c2_defconfig b/configs/odroid-c2_defconfig
+index 19196b3585..8cb419fdd4 100644
+--- a/configs/odroid-c2_defconfig
++++ b/configs/odroid-c2_defconfig
+@@ -1,7 +1,6 @@
+ CONFIG_ARM=y
+ CONFIG_ARCH_MESON=y
+ CONFIG_SYS_TEXT_BASE=0x01000000
+-CONFIG_MESON_GXBB=y
+ CONFIG_TARGET_ODROID_C2=y
+ CONFIG_DEBUG_UART_BASE=0xc81004c0
+ CONFIG_DEBUG_UART_CLOCK=24000000
+diff --git a/configs/p212_defconfig b/configs/p212_defconfig
+index 9e3b1d6bfb..3a2187014d 100644
+--- a/configs/p212_defconfig
++++ b/configs/p212_defconfig
+@@ -1,7 +1,6 @@
+ CONFIG_ARM=y
+ CONFIG_ARCH_MESON=y
+ CONFIG_SYS_TEXT_BASE=0x01000000
+-CONFIG_MESON_GXL=y
+ CONFIG_TARGET_P212=y
+ CONFIG_DEBUG_UART_BASE=0xc81004c0
+ CONFIG_DEBUG_UART_CLOCK=24000000
+diff --git a/include/configs/khadas-vim.h b/include/configs/khadas-vim.h
+deleted file mode 100644
+index ff87c02820..0000000000
+--- a/include/configs/khadas-vim.h
++++ /dev/null
+@@ -1,14 +0,0 @@
+-/* SPDX-License-Identifier: GPL-2.0+ */
+-/*
+- * Configuration for Khadas VIM
+- *
+- * Copyright (C) 2017 Baylibre, SAS
+- * Author: Neil Armstrong <narmstrong@baylibre.com>
+- */
+-
+-#ifndef __CONFIG_H
+-#define __CONFIG_H
+-
+-#include <configs/meson-gx-common.h>
+-
+-#endif /* __CONFIG_H */
+diff --git a/include/configs/libretech-cc.h b/include/configs/libretech-cc.h
+deleted file mode 100644
+index 95e0f346fd..0000000000
+--- a/include/configs/libretech-cc.h
++++ /dev/null
+@@ -1,14 +0,0 @@
+-/* SPDX-License-Identifier: GPL-2.0+ */
+-/*
+- * Configuration for LibreTech CC
+- *
+- * Copyright (C) 2017 Baylibre, SAS
+- * Author: Neil Armstrong <narmstrong@baylibre.com>
+- */
+-
+-#ifndef __CONFIG_H
+-#define __CONFIG_H
+-
+-#include <configs/meson-gx-common.h>
+-
+-#endif /* __CONFIG_H */
+diff --git a/include/configs/meson-gx-common.h b/include/configs/meson64.h
+similarity index 80%
+rename from include/configs/meson-gx-common.h
+rename to include/configs/meson64.h
+index c43697665d..67751bce8a 100644
+--- a/include/configs/meson-gx-common.h
++++ b/include/configs/meson64.h
+@@ -1,11 +1,15 @@
+ /* SPDX-License-Identifier: GPL-2.0+ */
+ /*
+- * Configuration for Amlogic Meson GX SoCs
++ * Configuration for Amlogic Meson 64bits SoCs
+  * (C) Copyright 2016 Beniamino Galvani <b.galvani@gmail.com>
+  */
+ 
+-#ifndef __MESON_GX_COMMON_CONFIG_H
+-#define __MESON_GX_COMMON_CONFIG_H
++#ifndef __MESON64_CONFIG_H
++#define __MESON64_CONFIG_H
++
++/* Generic Interrupt Controller Definitions */
++#define GICD_BASE			0xc4301000
++#define GICC_BASE			0xc4302000
+ 
+ #define CONFIG_CPU_ARMV8
+ #define CONFIG_REMAKE_ELF
+@@ -17,10 +21,7 @@
+ #define CONFIG_SYS_SDRAM_BASE		0
+ #define CONFIG_SYS_INIT_SP_ADDR		0x20000000
+ #define CONFIG_SYS_LOAD_ADDR		CONFIG_SYS_TEXT_BASE
+-
+-/* Generic Interrupt Controller Definitions */
+-#define GICD_BASE			0xc4301000
+-#define GICC_BASE			0xc4302000
++#define CONFIG_SYS_BOOTM_LEN    	(64 << 20)      /* 64 MiB */
+ 
+ #ifdef CONFIG_CMD_USB
+ #define BOOT_TARGET_DEVICES_USB(func) func(USB, usb, 0)
+@@ -28,6 +29,7 @@
+ #define BOOT_TARGET_DEVICES_USB(func)
+ #endif
+ 
++#ifndef BOOT_TARGET_DEVICES
+ #define BOOT_TARGET_DEVICES(func) \
+ 	func(MMC, mmc, 0) \
+ 	func(MMC, mmc, 1) \
+@@ -35,9 +37,9 @@
+ 	BOOT_TARGET_DEVICES_USB(func) \
+ 	func(PXE, pxe, na) \
+ 	func(DHCP, dhcp, na)
++#endif
+ 
+-#include <config_distro_bootcmd.h>
+-
++#ifndef CONFIG_EXTRA_ENV_SETTINGS
+ #define CONFIG_EXTRA_ENV_SETTINGS \
+ 	"fdt_addr_r=0x01000000\0" \
+ 	"scriptaddr=0x1f000000\0" \
+@@ -46,7 +48,8 @@
+ 	"ramdisk_addr_r=0x13000000\0" \
+ 	"fdtfile=amlogic/" CONFIG_DEFAULT_DEVICE_TREE ".dtb\0" \
+ 	BOOTENV
++#endif
+ 
+-#define CONFIG_SYS_BOOTM_LEN    (64 << 20)      /* 64 MiB */
++#include <config_distro_bootcmd.h>
+ 
+-#endif /* __MESON_GX_COMMON_CONFIG_H */
++#endif /* __MESON64_CONFIG_H */
+diff --git a/include/configs/nanopi-k2.h b/include/configs/nanopi-k2.h
+deleted file mode 100644
+index 3fd6e8fba4..0000000000
+--- a/include/configs/nanopi-k2.h
++++ /dev/null
+@@ -1,12 +0,0 @@
+-/* SPDX-License-Identifier: GPL-2.0+ */
+-/*
+- * Configuration for NANOPI-K2
+- * (C) Copyright 2018 Thomas McKahan
+- */
+-
+-#ifndef __CONFIG_H
+-#define __CONFIG_H
+-
+-#include <configs/meson-gx-common.h>
+-
+-#endif /* __CONFIG_H */
+diff --git a/include/configs/odroid-c2.h b/include/configs/odroid-c2.h
+deleted file mode 100644
+index 87e3ddb342..0000000000
+--- a/include/configs/odroid-c2.h
++++ /dev/null
+@@ -1,12 +0,0 @@
+-/* SPDX-License-Identifier: GPL-2.0+ */
+-/*
+- * Configuration for ODROID-C2
+- * (C) Copyright 2016 Beniamino Galvani <b.galvani@gmail.com>
+- */
+-
+-#ifndef __CONFIG_H
+-#define __CONFIG_H
+-
+-#include <configs/meson-gx-common.h>
+-
+-#endif /* __CONFIG_H */
+diff --git a/include/configs/p212.h b/include/configs/p212.h
+deleted file mode 100644
+index 4414293479..0000000000
+--- a/include/configs/p212.h
++++ /dev/null
+@@ -1,14 +0,0 @@
+-/* SPDX-License-Identifier: GPL-2.0+ */
+-/*
+- * Configuration for Amlogic P212
+- *
+- * Copyright (C) 2017 Baylibre, SAS
+- * Author: Neil Armstrong <narmstrong@baylibre.com>
+- */
+-
+-#ifndef __CONFIG_H
+-#define __CONFIG_H
+-
+-#include <configs/meson-gx-common.h>
+-
+-#endif /* __CONFIG_H */
+-- 
+2.19.1
+

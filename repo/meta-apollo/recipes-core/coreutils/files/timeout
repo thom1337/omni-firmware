@@ -1,0 +1,26 @@
+#!/bin/zsh
+
+timeout=$1 && shift
+
+if [ "$#" -lt "2" ]; then
+    echo "Usage:   $(basename "$0") timeout_in_seconds command" >&2
+    echo "Example: $(basename "$0") 2 sleep 3" >&2
+    exit 1
+fi
+
+(
+    ((t = timeout))
+
+    while ((t > 0)); do
+        sleep 1
+        kill -0 $$ || exit 0
+        ((t -= 1))
+    done
+
+    # Be nice, post SIGTERM first.
+    kill -s SIGTERM $$ && kill -0 $$ || exit 124
+    sleep 1
+    kill -s SIGKILL $$
+) 2> /dev/null &
+
+exec "$@"

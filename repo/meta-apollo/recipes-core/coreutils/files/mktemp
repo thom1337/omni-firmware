@@ -1,0 +1,24 @@
+#!/bin/sh
+
+create_entry() {
+	for i in 0 1 2 3 4 5 6 7 8 9; do
+		TMP_PATH="/tmp/tmp.$(date +%s%N)"
+		[ "$1" = "file" ] && [ ! -f "${TMP_PATH}" ] && touch "${TMP_PATH}" && echo "${TMP_PATH}" && break
+		[ "$1" = "directory" ] && mkdir "${TMP_PATH}" && echo "${TMP_PATH}" && break
+	done
+}
+
+
+if [ "$#" -eq 0 ]; then
+	create_entry file
+else
+	case "$1" in
+		-d|--directory)
+			create_entry directory
+			;;
+		*)
+			echo "Unimplemented feature!" >&2
+			exit 1
+			;;
+	esac
+fi

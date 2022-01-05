@@ -1,0 +1,30 @@
+From 5fa948056de7035eff0bbe6c2749b375bff2548b Mon Sep 17 00:00:00 2001
+From: Jan Kaisrlik <jan.kaisrlik@avast.com>
+Date: Fri, 7 May 2021 13:59:24 +0200
+Subject: [PATCH] Force wait3 syscall
+
+Enabling wait3 syscall also add rusege will it the syscall
+
+Signed-off-by: Jan Kaisrlik <jan.kaisrlik@avast.com>
+---
+ configure.ac | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/configure.ac b/configure.ac
+index ede8fd5..6835715 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -70,7 +70,9 @@ AC_TYPE_SIGNAL
+ 
+ dnl Checks for library functions.
+ AC_FUNC_VPRINTF
+-AC_FUNC_WAIT3
++AC_DEFINE([HAVE_WAIT3], 1,
++        [Define to 1 if you have the `wait3' system call.
++         Deprecated, you should no longer depend upon `wait3'.])
+ AC_CHECK_FUNCS(strerror)
+ 
+ 
+-- 
+2.6.5
+

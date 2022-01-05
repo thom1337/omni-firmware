@@ -1,0 +1,110 @@
+From cc0aa7f94f20e08fc73a87b898536ba8be7bfb7f Mon Sep 17 00:00:00 2001
+From: Jerome Brunet <jbrunet@baylibre.com>
+Date: Fri, 5 Oct 2018 10:25:47 +0200
+Subject: [PATCH 02/55] ARM: meson: clean-up platform selection
+
+Even if multiple board are selected through Kconfig, u-boot will only
+compile one. This makes sense since compiling these targets will export
+global symbols, such as board_init()
+
+The change rework amlogic Kconfig so only one board may be selected at
+a time
+
+Signed-off-by: Jerome Brunet <jbrunet@baylibre.com>
+---
+ arch/arm/mach-meson/Kconfig | 36 +++++++++++++++++-------------------
+ 1 file changed, 17 insertions(+), 19 deletions(-)
+
+diff --git a/arch/arm/mach-meson/Kconfig b/arch/arm/mach-meson/Kconfig
+index ee8b1cdcf6..0a69ec73f9 100644
+--- a/arch/arm/mach-meson/Kconfig
++++ b/arch/arm/mach-meson/Kconfig
+@@ -1,31 +1,28 @@
+ if ARCH_MESON
+ 
+-config MESON_GXBB
+-	bool "Support Meson GXBaby"
++config MESON_GX
++	bool
+ 	select ARM64
+ 	select CLK
+ 	select DM
+ 	select DM_SERIAL
+ 	imply CMD_DM
+-	help
+-	  The Amlogic Meson GXBaby (S905) is an ARM SoC with a
+-	  quad-core Cortex-A53 CPU and a Mali-450 GPU.
++
++config MESON_GXBB
++	bool
++	select MESON64_COMMON
+ 
+ config MESON_GXL
+-	bool "Support Meson GXL"
+-	select ARM64
+-	select CLK
+-	select DM
+-	select DM_SERIAL
+-	imply CMD_DM
+-	help
+-	  The Amlogic Meson GXL (S905X and S905D) is an ARM SoC with a
+-	  quad-core Cortex-A53 CPU and a Mali-450 GPU.
++	bool
++	select MESON64_COMMON
+ 
+-if MESON_GXBB
++choice
++	prompt "Platform select"
++	default TARGET_ODROID_C2
+ 
+ config TARGET_ODROID_C2
+ 	bool "ODROID-C2"
++	select MESON_GXBB
+ 	help
+ 	  ODROID-C2 is a single board computer based on Meson GXBaby
+ 	  with 2 GiB of RAM, Gigabit Ethernet, HDMI, 4 USB, micro-SD
+@@ -33,16 +30,15 @@ config TARGET_ODROID_C2
+ 
+ config TARGET_NANOPI_K2
+ 	bool "NANOPI_K2"
++	select MESON_GXBB
+ 	help
+ 	  NANOPI_K2 is a single board computer based on Meson GXBaby
+ 	  with 2 GiB of RAM, Gigabit Ethernet,AP6212 Wifi, HDMI, 4 USB,
+ 	  micro-SD slot, eMMC, IR receiver and a 40-pin GPIO header.
+-endif
+-
+-if MESON_GXL
+ 
+ config TARGET_P212
+ 	bool "P212"
++	select MESON_GXL
+ 	help
+ 	  P212 is a reference dessign board based on Meson GXL S905X SoC
+ 	  with 2 GiB of RAM, Ethernet, HDMI, 2 USB, micro-SD slot,
+@@ -50,6 +46,7 @@ config TARGET_P212
+ 
+ config TARGET_LIBRETECH_CC
+ 	bool "LIBRETECH-CC"
++	select MESON_GXL
+ 	help
+ 	  LibreTech CC is a single board computer based on Meson GXL
+ 	  with 2 GiB of RAM, Ethernet, HDMI, 4 USB, micro-SD slot,
+@@ -57,12 +54,13 @@ config TARGET_LIBRETECH_CC
+ 
+ config TARGET_KHADAS_VIM
+ 	bool "KHADAS-VIM"
++	select MESON_GXL
+ 	help
+ 	  Khadas VIM is a single board computer based on Meson GXL
+ 	  with 2 GiB of RAM, Ethernet, HDMI, 4 USB, micro-SD slot,
+ 	  eMMC, IR receiver and a 40-pin GPIO header.
+ 
+-endif
++endchoice
+ 
+ config SYS_SOC
+ 	default "meson"
+-- 
+2.19.1
+

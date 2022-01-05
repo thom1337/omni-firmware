@@ -1,0 +1,38 @@
+From 26e1b56ea8f1cbe212af8dae06ba1e2c5199dde3 Mon Sep 17 00:00:00 2001
+From: Carlo Caione <ccaione@baylibre.com>
+Date: Thu, 14 Feb 2019 17:24:52 +0000
+Subject: [PATCH 54/55] apollo: Move force_run_eol definition
+
+Signed-off-by: Carlo Caione <ccaione@baylibre.com>
+---
+ include/configs/apollo.h | 1 -
+ include/env_mender.h     | 1 +
+ 2 files changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/include/configs/apollo.h b/include/configs/apollo.h
+index 29e9870025..f1b1bad61d 100644
+--- a/include/configs/apollo.h
++++ b/include/configs/apollo.h
+@@ -27,7 +27,6 @@
+ 	"kernel_addr_r=0x08080000\0" \
+ 	"pxefile_addr_r=0x01080000\0" \
+ 	"ramdisk_addr_r=0x13000000\0" \
+-	"force_run_eol=1\0" \
+ 	"fdtfile=amlogic/" CONFIG_DEFAULT_DEVICE_TREE ".dtb\0" \
+ 	CHECK_ENV \
+ 	BOOTENV
+diff --git a/include/env_mender.h b/include/env_mender.h
+index f03f810b0d..31fbdad18c 100644
+--- a/include/env_mender.h
++++ b/include/env_mender.h
+@@ -45,6 +45,7 @@
+     MENDER_UBI_SETTINGS \
+     \
+     "bootlimit=1\0" \
++    "force_run_eol=1\0" \
+     "bootcount=0\0" \
+     "upgrade_available=0\0" \
+     "mender_boot_part_A=" __stringify(MENDER_ROOTFS_PART_A_NUMBER) "\0" \
+-- 
+2.19.1
+

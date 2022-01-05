@@ -1,0 +1,35 @@
+From 4afcce0abd07dc5bfe421dfc048cca41c8eb976d Mon Sep 17 00:00:00 2001
+From: Carlo Caione <ccaione@baylibre.com>
+Date: Tue, 4 Dec 2018 09:33:23 +0000
+Subject: [PATCH 48/55] recovery: apollo: Save partition A number/hex for reset
+
+We are going to use this variables during factory reset to restore the
+boot from partition A. We do not want to use the canary because we need
+to retain some information already stored in the env.
+
+Signed-off-by: Carlo Caione <ccaione@baylibre.com>
+---
+ include/env_mender.h | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/include/env_mender.h b/include/env_mender.h
+index 8de391d4b9..52a95a08e3 100644
+--- a/include/env_mender.h
++++ b/include/env_mender.h
+@@ -43,10 +43,12 @@
+ #define MENDER_ENV_SETTINGS \
+     MENDER_DEFAULT_ALTBOOTCMD \
+     MENDER_UBI_SETTINGS \
+-                                                                        \
++    \
+     "bootlimit=1\0" \
+     "bootcount=0\0" \
+     "upgrade_available=0\0" \
++    "mender_boot_part_A=" __stringify(MENDER_ROOTFS_PART_A_NUMBER) "\0" \
++    "mender_boot_part_hex_A=" __stringify(MENDER_ROOTFS_PART_A_NUMBER_HEX) "\0" \
+     "mender_boot_part=" __stringify(MENDER_ROOTFS_PART_A_NUMBER) "\0" \
+     "mender_boot_part_hex=" __stringify(MENDER_ROOTFS_PART_A_NUMBER_HEX) "\0" \
+     "mender_uboot_boot=" MENDER_UBOOT_STORAGE_INTERFACE " " __stringify(MENDER_UBOOT_STORAGE_DEVICE) ":" __stringify(MENDER_BOOT_PART_NUMBER_HEX) "\0" \
+-- 
+2.19.1
+

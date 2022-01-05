@@ -1,0 +1,224 @@
+From fa1420d217a54f73d1278f67773e6d15de9a41be Mon Sep 17 00:00:00 2001
+From: Neil Armstrong <narmstrong@baylibre.com>
+Date: Fri, 27 Jul 2018 14:10:00 +0200
+Subject: [PATCH 21/55] ARM: meson: Add boot device discovery
+
+---
+ arch/arm/include/asm/arch-meson/axg.h  |  1 +
+ arch/arm/include/asm/arch-meson/boot.h | 20 +++++++++++
+ arch/arm/include/asm/arch-meson/gx.h   |  1 +
+ arch/arm/mach-meson/Kconfig            |  1 +
+ arch/arm/mach-meson/board-axg.c        |  6 ++++
+ arch/arm/mach-meson/board-common.c     | 46 ++++++++++++++++++++++++++
+ arch/arm/mach-meson/board-gx.c         |  6 ++++
+ include/configs/meson64.h              | 12 +++++++
+ 8 files changed, 93 insertions(+)
+ create mode 100644 arch/arm/include/asm/arch-meson/boot.h
+
+diff --git a/arch/arm/include/asm/arch-meson/axg.h b/arch/arm/include/asm/arch-meson/axg.h
+index 28a38b791d..d293f2a839 100644
+--- a/arch/arm/include/asm/arch-meson/axg.h
++++ b/arch/arm/include/asm/arch-meson/axg.h
+@@ -20,6 +20,7 @@
+ #define AXG_AO_SEC_GP_CFG4	AXG_AO_ADDR(0x94)
+ #define AXG_AO_SEC_GP_CFG5	AXG_AO_ADDR(0x95)
+ 
++#define AXG_AO_BOOT_DEVICE	0xF
+ #define AXG_AO_MEM_SIZE_MASK	0xFFFF0000
+ #define AXG_AO_MEM_SIZE_SHIFT	16
+ #define AXG_AO_BL31_RSVMEM_SIZE_MASK	0xFFFF0000
+diff --git a/arch/arm/include/asm/arch-meson/boot.h b/arch/arm/include/asm/arch-meson/boot.h
+new file mode 100644
+index 0000000000..a90fe55081
+--- /dev/null
++++ b/arch/arm/include/asm/arch-meson/boot.h
+@@ -0,0 +1,20 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++/*
++ * Copyright (C) 2016 BayLibre, SAS
++ * Author: Neil Armstrong <narmstrong@baylibre.com>
++ */
++
++#ifndef __MESON_BOOT_H__
++#define __MESON_BOOT_H__
++
++/* Boot device */
++#define BOOT_DEVICE_RESERVED    0
++#define BOOT_DEVICE_EMMC        1
++#define BOOT_DEVICE_NAND        2
++#define BOOT_DEVICE_SPI         3
++#define BOOT_DEVICE_SD          4
++#define BOOT_DEVICE_USB         5
++
++int meson_get_boot_device(void);
++
++#endif /* __MESON_BOOT_H__ */
+diff --git a/arch/arm/include/asm/arch-meson/gx.h b/arch/arm/include/asm/arch-meson/gx.h
+index 4bc9475d35..b781ba9475 100644
+--- a/arch/arm/include/asm/arch-meson/gx.h
++++ b/arch/arm/include/asm/arch-meson/gx.h
+@@ -21,6 +21,7 @@
+ #define GX_AO_SEC_GP_CFG4	GX_AO_ADDR(0x94)
+ #define GX_AO_SEC_GP_CFG5	GX_AO_ADDR(0x95)
+ 
++#define GX_AO_BOOT_DEVICE	0xF
+ #define GX_AO_MEM_SIZE_MASK	0xFFFF0000
+ #define GX_AO_MEM_SIZE_SHIFT	16
+ #define GX_AO_BL31_RSVMEM_SIZE_MASK	0xFFFF0000
+diff --git a/arch/arm/mach-meson/Kconfig b/arch/arm/mach-meson/Kconfig
+index 53175e249b..dcc766eb6d 100644
+--- a/arch/arm/mach-meson/Kconfig
++++ b/arch/arm/mach-meson/Kconfig
+@@ -8,6 +8,7 @@ config MESON64_COMMON
+ 	select DM_SERIAL
+ 	select SYSCON
+ 	select REGMAP
++	select BOARD_LATE_INIT
+ 	imply CMD_DM
+ 
+ config MESON_GX
+diff --git a/arch/arm/mach-meson/board-axg.c b/arch/arm/mach-meson/board-axg.c
+index 014b25d61a..5cae6452d3 100644
+--- a/arch/arm/mach-meson/board-axg.c
++++ b/arch/arm/mach-meson/board-axg.c
+@@ -5,6 +5,7 @@
+  */
+ 
+ #include <common.h>
++#include <asm/arch/boot.h>
+ #include <asm/arch/eth.h>
+ #include <asm/arch/axg.h>
+ #include <asm/arch/mem.h>
+@@ -15,6 +16,11 @@
+ 
+ DECLARE_GLOBAL_DATA_PTR;
+ 
++int meson_get_boot_device(void)
++{
++        return readl(AXG_AO_SEC_GP_CFG0) & AXG_AO_BOOT_DEVICE;
++}
++
+ /* Configure the reserved memory zones exported by the secure registers
+  * into EFI and DTB reserved memory entries.
+  */
+diff --git a/arch/arm/mach-meson/board-common.c b/arch/arm/mach-meson/board-common.c
+index 249e0d9a7d..03c34f60df 100644
+--- a/arch/arm/mach-meson/board-common.c
++++ b/arch/arm/mach-meson/board-common.c
+@@ -4,6 +4,7 @@
+  */
+ 
+ #include <common.h>
++#include <asm/arch/boot.h>
+ #include <linux/libfdt.h>
+ #include <linux/err.h>
+ #include <asm/arch/mem.h>
+@@ -66,6 +67,51 @@ void meson_board_add_reserved_memory(void *fdt, u64 start, u64 size)
+ 	}
+ }
+ 
++static void meson_set_boot_source(void)
++{
++	const char *source;
++
++	switch (meson_get_boot_device()) {
++
++	case BOOT_DEVICE_EMMC:
++		source = "emmc";
++		break;
++
++	case BOOT_DEVICE_NAND:
++		source = "nand";
++		break;
++
++	case BOOT_DEVICE_SPI:
++		source = "spi";
++		break;
++
++	case BOOT_DEVICE_SD:
++		source = "sd";
++		break;
++
++	case BOOT_DEVICE_USB:
++		source = "usb";
++		break;
++
++	default:
++		source = "unknown";
++	}
++
++	env_set("boot_source", source);
++}
++
++__weak int meson_board_late_init(void)
++{
++	return 0;
++}
++
++int board_late_init(void)
++{
++	meson_set_boot_source();
++
++	return meson_board_late_init();
++}
++
+ void reset_cpu(ulong addr)
+ {
+ 	psci_system_reset();
+diff --git a/arch/arm/mach-meson/board-gx.c b/arch/arm/mach-meson/board-gx.c
+index 30705fefe6..9f51e19708 100644
+--- a/arch/arm/mach-meson/board-gx.c
++++ b/arch/arm/mach-meson/board-gx.c
+@@ -5,6 +5,7 @@
+  */
+ 
+ #include <common.h>
++#include <asm/arch/boot.h>
+ #include <asm/arch/eth.h>
+ #include <asm/arch/gx.h>
+ #include <asm/arch/mem.h>
+@@ -15,6 +16,11 @@
+ 
+ DECLARE_GLOBAL_DATA_PTR;
+ 
++int meson_get_boot_device(void)
++{
++        return readl(GX_AO_SEC_GP_CFG0) & GX_AO_BOOT_DEVICE;
++}
++
+ /* Configure the reserved memory zones exported by the secure registers
+  * into EFI and DTB reserved memory entries.
+  */
+diff --git a/include/configs/meson64.h b/include/configs/meson64.h
+index d9dfede61a..7066b9e627 100644
+--- a/include/configs/meson64.h
++++ b/include/configs/meson64.h
+@@ -28,6 +28,17 @@
+ #define CONFIG_SYS_LOAD_ADDR		CONFIG_SYS_TEXT_BASE
+ #define CONFIG_SYS_BOOTM_LEN    	(64 << 20)      /* 64 MiB */
+ 
++/* ROM USB boot support, auto-execute boot.scr at scriptaddr */
++#define BOOTENV_DEV_ROMUSB(devtypeu, devtypel, instance) \
++	"bootcmd_romusb=" \
++		"if test \"${boot_source}\" = \"usb\" && test -n \"${scriptaddr}\"; then " \
++			"echo '(ROM USB boot)'; " \
++			"source ${scriptaddr}; " \
++		"fi\0"
++
++#define BOOTENV_DEV_NAME_ROMUSB(devtypeu, devtypel, instance)	\
++		"romusb "
++
+ #ifdef CONFIG_CMD_USB
+ #define BOOT_TARGET_DEVICES_USB(func) func(USB, usb, 0)
+ #else
+@@ -36,6 +47,7 @@
+ 
+ #ifndef BOOT_TARGET_DEVICES
+ #define BOOT_TARGET_DEVICES(func) \
++	func(ROMUSB, romusb, na)  \
+ 	func(MMC, mmc, 0) \
+ 	func(MMC, mmc, 1) \
+ 	func(MMC, mmc, 2) \
+-- 
+2.19.1
+

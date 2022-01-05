@@ -1,0 +1,34 @@
+From f30f5825f1adc93a68684299fb3dbee8b87f4bf9 Mon Sep 17 00:00:00 2001
+From: Jan Kaisrlik <jan.kaisrlik@avast.com>
+Date: Wed, 20 Feb 2019 11:10:13 +0100
+Subject: [PATCH] cmake: change install location of cmake files
+
+Location of cmake configurtion is changed based on startdard linux
+distributuion.
+---
+ CMakeLists.txt | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index a6377bc..f71dfd8 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -337,13 +337,13 @@ INSTALL(
+     FILES
+     "${PROJECT_BINARY_DIR}/libtinsConfig.cmake"
+     "${PROJECT_BINARY_DIR}/libtinsConfigVersion.cmake"
+-    DESTINATION CMake
++    DESTINATION lib/cmake/libtins
+     COMPONENT dev
+ )
+ 
+ # Install the export set for use with the install-tree
+ INSTALL(
+     EXPORT libtinsTargets
+-    DESTINATION CMake
++    DESTINATION lib/cmake/libtins
+     COMPONENT dev
+ )
+-- 
+2.19.1
+

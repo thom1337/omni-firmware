@@ -1,0 +1,409 @@
+From e166974e455e7931d1aa33a8a9e8504b820438ae Mon Sep 17 00:00:00 2001
+From: Jerome Brunet <jbrunet@baylibre.com>
+Date: Fri, 5 Oct 2018 19:14:31 +0200
+Subject: [PATCH 24/55] board: amlogic: apollo support
+
+Initial configuration for the apollo evt0 dev board
+This configuration will save the enviromnent mmc boot0
+
+Signed-off-by: Jerome Brunet <jbrunet@baylibre.com>
+---
+ arch/arm/dts/meson-axg-apollo-evt0.dts | 139 +++++++++++++++++++++++++
+ arch/arm/mach-meson/Kconfig            |   8 ++
+ board/amlogic/apollo/MAINTAINERS       |   6 ++
+ board/amlogic/apollo/Makefile          |   6 ++
+ board/amlogic/apollo/README            |  26 +++++
+ board/amlogic/apollo/apollo.c          |  23 ++++
+ configs/apollo_defconfig               |  40 +++++++
+ configs/apollo_noenv_defconfig         |  39 +++++++
+ include/configs/apollo.h               |  23 ++++
+ 9 files changed, 310 insertions(+)
+ create mode 100644 arch/arm/dts/meson-axg-apollo-evt0.dts
+ create mode 100644 board/amlogic/apollo/MAINTAINERS
+ create mode 100644 board/amlogic/apollo/Makefile
+ create mode 100644 board/amlogic/apollo/README
+ create mode 100644 board/amlogic/apollo/apollo.c
+ create mode 100644 configs/apollo_defconfig
+ create mode 100644 configs/apollo_noenv_defconfig
+ create mode 100644 include/configs/apollo.h
+
+diff --git a/arch/arm/dts/meson-axg-apollo-evt0.dts b/arch/arm/dts/meson-axg-apollo-evt0.dts
+new file mode 100644
+index 0000000000..b3e4d3d074
+--- /dev/null
++++ b/arch/arm/dts/meson-axg-apollo-evt0.dts
+@@ -0,0 +1,139 @@
++// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
++/*
++ * Copyright (c) 2018 Baylibre SAS. All rights reserved.
++ */
++
++/dts-v1/;
++
++#include "meson-axg.dtsi"
++
++/ {
++	compatible = "avast,apollo-evt0", "amlogic,a113d", "amlogic,meson-axg";
++	model = "Avast Apollo EVT0 Board";
++
++	aliases {
++		serial0 = &uart_AO;
++		ethernet0 = &ethmac;
++	};
++
++	chosen {
++		stdout-path = "serial0:115200n8";
++	};
++
++	emmc_pwrseq: emmc-pwrseq {
++		compatible = "mmc-pwrseq-emmc";
++		reset-gpios = <&gpio BOOT_9 GPIO_ACTIVE_LOW>;
++	};
++
++	leds {
++		compatible = "pwm-leds";
++
++		app1 {
++			label = "apollo:app1";
++			pwms = <&pwm_cd 0 7812500 0>;
++			max-brightness = <255>;
++		};
++
++		app2 {
++			label = "apollo:app2";
++			pwms = <&pwm_ab 0 7812500 0>;
++			max-brightness = <255>;
++		};
++
++		power {
++			label = "apollo:power";
++			pwms = <&pwm_ab 1 7812500 0>;
++			max-brightness = <255>;
++			linux,default-trigger = "default-on";
++		};
++	};
++
++	memory@0 {
++		device_type = "memory";
++		reg = <0x0 0x0 0x0 0x20000000>; /* 512MB */
++	};
++
++	supply_5v: regulator-supply_5v {
++		compatible = "regulator-fixed";
++		regulator-name = "5V";
++		regulator-min-microvolt = <5000000>;
++		regulator-max-microvolt = <5000000>;
++		regulator-always-on;
++	};
++
++	vcc_3v3: regulator-vcc_3v3 {
++		compatible = "regulator-fixed";
++		regulator-name = "VCC_3V3";
++		regulator-min-microvolt = <3300000>;
++		regulator-max-microvolt = <3300000>;
++		vin-supply = <&supply_5v>;
++		regulator-always-on;
++	};
++
++	vddio_boot: regulator-vddio_boot {
++		compatible = "regulator-fixed";
++		regulator-name = "VDDIO_BOOT";
++		regulator-min-microvolt = <1800000>;
++		regulator-max-microvolt = <1800000>;
++		vin-supply = <&vcc_3v3>;
++		regulator-always-on;
++	};
++};
++
++&ethmac {
++	status = "okay";
++	pinctrl-0 = <&eth_rgmii_y_pins>;
++	pinctrl-names = "default";
++	phy-handle = <&eth_phy0>;
++	phy-mode = "rgmii";
++
++	mdio {
++		compatible = "snps,dwmac-mdio";
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		eth_phy0: ethernet-phy@0 {
++			/* Realtek RTL8211F (0x001cc916) */
++			reg = <0>;
++			eee-broken-1000t;
++		};
++	};
++};
++
++&pwm_ab {
++	status = "okay";
++	pinctrl-0 = <&pwm_a_a_pins>, <&pwm_b_a_pins>;
++	pinctrl-names = "default";
++};
++
++&pwm_cd {
++	status = "okay";
++	pinctrl-0 = <&pwm_c_a_pins>;
++	pinctrl-names = "default";
++};
++
++&sd_emmc_c {
++	status = "okay";
++	pinctrl-0 = <&emmc_pins>;
++	pinctrl-1 = <&emmc_clk_gate_pins>;
++	pinctrl-names = "default", "clk-gate";
++
++	bus-width = <8>;
++	cap-mmc-highspeed;
++	max-frequency = <180000000>;
++	non-removable;
++	disable-wp;
++	mmc-ddr-1_8v;
++	mmc-hs200-1_8v;
++
++	mmc-pwrseq = <&emmc_pwrseq>;
++
++	vmmc-supply = <&vcc_3v3>;
++	vqmmc-supply = <&vddio_boot>;
++};
++
++&uart_AO {
++	status = "okay";
++	pinctrl-0 = <&uart_ao_a_pins>;
++	pinctrl-names = "default";
++};
+diff --git a/arch/arm/mach-meson/Kconfig b/arch/arm/mach-meson/Kconfig
+index dcc766eb6d..8fc13ccfb9 100644
+--- a/arch/arm/mach-meson/Kconfig
++++ b/arch/arm/mach-meson/Kconfig
+@@ -58,6 +58,13 @@ config TARGET_S400
+ 	  with 1 GiB of RAM, Ethernet, microUSB, eMMC, IR receiver, 2x M.2 PCIe,
+ 	  complete set of I/Os for Audio and a SDIO WiFi module.
+ 
++config TARGET_APOLLO
++	bool "Apollo"
++	select MESON_AXG
++	help
++	  Apollo is a network device from Avast based on Meson AXG A113D SoC
++	  with 512 GiB of RAM, Ethernet and eMMC.
++
+ endchoice
+ 
+ config SYS_SOC
+@@ -79,6 +86,7 @@ config SYS_BOARD
+ 	default "odroid-c2" if TARGET_ODROID_C2
+ 	default "p212" if TARGET_P212
+ 	default "s400" if TARGET_S400
++	default "apollo" if TARGET_APOLLO
+ 	default ""
+ 	help
+ 	  This option contains information about board name.
+diff --git a/board/amlogic/apollo/MAINTAINERS b/board/amlogic/apollo/MAINTAINERS
+new file mode 100644
+index 0000000000..c8fee3eaef
+--- /dev/null
++++ b/board/amlogic/apollo/MAINTAINERS
+@@ -0,0 +1,6 @@
++AVAST APOLLO
++M:	Neil Armstrong <narmstrong@baylibre.com>
++S:	Maintained
++F:	board/amlogic/apollo/
++F:	include/configs/apollo.h
++F:	configs/apollo_defconfig
+diff --git a/board/amlogic/apollo/Makefile b/board/amlogic/apollo/Makefile
+new file mode 100644
+index 0000000000..cec03d5d6a
+--- /dev/null
++++ b/board/amlogic/apollo/Makefile
+@@ -0,0 +1,6 @@
++# SPDX-License-Identifier: GPL-2.0+
++#
++# (C) Copyright 2018 BayLibre, SAS
++# Author: Neil Armstrong <narmstrong@baylibre.com>
++
++obj-y	:= apollo.o
+diff --git a/board/amlogic/apollo/README b/board/amlogic/apollo/README
+new file mode 100644
+index 0000000000..e18aec4952
+--- /dev/null
++++ b/board/amlogic/apollo/README
+@@ -0,0 +1,26 @@
++U-Boot for Avast Apollo
++=======================
++
++Apollo is a network device manufactured by Avast with the following
++specifications:
++
++ - Amlogic A113D ARM Cortex-A53
++ - 512 MB SDRAM
++ - 10/100/1000 Ethernet
++ - eMMC
++
++Refer to the amlogic S400 for more details
++
++==================
++
++ > export ARCH=arm
++ > export CROSS_COMPILE=aarch64-none-elf-
++ > make apollo_defconfig
++ > make
++
++Image creation
++==============
++
++Refer to the amlogic S400 for more details on how to get the ATF
++binaries and package them for the A113. The S400 ATF bianries can
++be used directly with apollo
+\ No newline at end of file
+diff --git a/board/amlogic/apollo/apollo.c b/board/amlogic/apollo/apollo.c
+new file mode 100644
+index 0000000000..247867030b
+--- /dev/null
++++ b/board/amlogic/apollo/apollo.c
+@@ -0,0 +1,23 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Copyright (C) 2018 BayLibre, SAS
++ * Author: Neil Armstrong <narmstrong@baylibre.com>
++ */
++
++#include <common.h>
++#include <dm.h>
++#include <environment.h>
++#include <asm/io.h>
++#include <asm/arch/axg.h>
++#include <asm/arch/boot.h>
++#include <asm/arch/sm.h>
++#include <asm/arch/eth.h>
++#include <asm/arch/mem.h>
++
++int misc_init_r(void)
++{
++	meson_eth_init(PHY_INTERFACE_MODE_RGMII, 0);
++
++	return 0;
++}
++
+diff --git a/configs/apollo_defconfig b/configs/apollo_defconfig
+new file mode 100644
+index 0000000000..e882c2e4f4
+--- /dev/null
++++ b/configs/apollo_defconfig
+@@ -0,0 +1,40 @@
++CONFIG_ARM=y
++CONFIG_SYS_CONFIG_NAME="apollo"
++CONFIG_ARCH_MESON=y
++CONFIG_SYS_TEXT_BASE=0x01000000
++CONFIG_TARGET_APOLLO=y
++CONFIG_DEBUG_UART_BASE=0xff803000
++CONFIG_DEBUG_UART_CLOCK=24000000
++CONFIG_IDENT_STRING=" apollo"
++CONFIG_DEBUG_UART=y
++CONFIG_NR_DRAM_BANKS=1
++CONFIG_OF_BOARD_SETUP=y
++CONFIG_MISC_INIT_R=y
++# CONFIG_DISPLAY_CPUINFO is not set
++# CONFIG_DISPLAY_BOARDINFO is not set
++# CONFIG_CMD_BDI is not set
++# CONFIG_CMD_IMI is not set
++CONFIG_CMD_GPIO=y
++# CONFIG_CMD_LOADS is not set
++CONFIG_CMD_MMC=y
++# CONFIG_CMD_SETEXPR is not set
++CONFIG_CMD_REGULATOR=y
++CONFIG_OF_CONTROL=y
++CONFIG_DEFAULT_DEVICE_TREE="meson-axg-apollo-evt0"
++CONFIG_ENV_IS_IN_MMC=y
++CONFIG_NET_RANDOM_ETHADDR=y
++CONFIG_DM_GPIO=y
++CONFIG_DM_MMC=y
++CONFIG_MMC_MESON_GX=y
++CONFIG_DM_ETH=y
++CONFIG_ETH_DESIGNWARE=y
++CONFIG_PINCTRL=y
++CONFIG_PINCTRL_MESON_AXG=y
++CONFIG_DM_REGULATOR=y
++CONFIG_DM_REGULATOR_FIXED=y
++CONFIG_DM_RESET=y
++CONFIG_DEBUG_UART_MESON=y
++CONFIG_DEBUG_UART_ANNOUNCE=y
++CONFIG_DEBUG_UART_SKIP_INIT=y
++CONFIG_MESON_SERIAL=y
++CONFIG_OF_LIBFDT_OVERLAY=y
+diff --git a/configs/apollo_noenv_defconfig b/configs/apollo_noenv_defconfig
+new file mode 100644
+index 0000000000..dd8f836cdb
+--- /dev/null
++++ b/configs/apollo_noenv_defconfig
+@@ -0,0 +1,39 @@
++CONFIG_ARM=y
++CONFIG_SYS_CONFIG_NAME="apollo"
++CONFIG_ARCH_MESON=y
++CONFIG_SYS_TEXT_BASE=0x01000000
++CONFIG_TARGET_APOLLO=y
++CONFIG_DEBUG_UART_BASE=0xff803000
++CONFIG_DEBUG_UART_CLOCK=24000000
++CONFIG_IDENT_STRING=" apollo"
++CONFIG_DEBUG_UART=y
++CONFIG_NR_DRAM_BANKS=1
++CONFIG_OF_BOARD_SETUP=y
++CONFIG_MISC_INIT_R=y
++# CONFIG_DISPLAY_CPUINFO is not set
++# CONFIG_DISPLAY_BOARDINFO is not set
++# CONFIG_CMD_BDI is not set
++# CONFIG_CMD_IMI is not set
++CONFIG_CMD_GPIO=y
++# CONFIG_CMD_LOADS is not set
++CONFIG_CMD_MMC=y
++# CONFIG_CMD_SETEXPR is not set
++CONFIG_CMD_REGULATOR=y
++CONFIG_OF_CONTROL=y
++CONFIG_DEFAULT_DEVICE_TREE="meson-axg-apollo-evt0"
++CONFIG_NET_RANDOM_ETHADDR=y
++CONFIG_DM_GPIO=y
++CONFIG_DM_MMC=y
++CONFIG_MMC_MESON_GX=y
++CONFIG_DM_ETH=y
++CONFIG_ETH_DESIGNWARE=y
++CONFIG_PINCTRL=y
++CONFIG_PINCTRL_MESON_AXG=y
++CONFIG_DM_REGULATOR=y
++CONFIG_DM_REGULATOR_FIXED=y
++CONFIG_DM_RESET=y
++CONFIG_DEBUG_UART_MESON=y
++CONFIG_DEBUG_UART_ANNOUNCE=y
++CONFIG_DEBUG_UART_SKIP_INIT=y
++CONFIG_MESON_SERIAL=y
++CONFIG_OF_LIBFDT_OVERLAY=y
+diff --git a/include/configs/apollo.h b/include/configs/apollo.h
+new file mode 100644
+index 0000000000..c8ba2cad9e
+--- /dev/null
++++ b/include/configs/apollo.h
+@@ -0,0 +1,23 @@
++/* SPDX-License-Identifier: GPL-2.0+ */
++/*
++ * Configuration for Avast Apollo
++ *
++ * Copyright (C) 2017 Baylibre, SAS
++ * Author: Neil Armstrong <narmstrong@baylibre.com>
++ */
++
++#ifndef __CONFIG_H
++#define __CONFIG_H
++
++#define CONFIG_ENV_SIZE			0x2000
++#define CONFIG_SYS_MMC_ENV_DEV		0
++#define CONFIG_SYS_MMC_ENV_PART		1
++#define CONFIG_ENV_OFFSET		0
++
++#define BOOT_TARGET_DEVICES(func) \
++	func(ROMUSB, romusb, na) \
++	func(MMC, mmc, 0)
++
++#include <configs/meson64.h>
++
++#endif /* __CONFIG_H */
+-- 
+2.19.1
+

@@ -1,0 +1,32 @@
+From b74ec83fe47f5559aeb7cd2259cec185ad239eaf Mon Sep 17 00:00:00 2001
+From: Jan Kaisrlik <jan.kaisrlik@avast.com>
+Date: Mon, 11 Nov 2019 10:02:51 +0100
+Subject: [PATCH 12/14] meson-axg-apollo: reserve memory for pstore_ram
+
+---
+ arch/arm64/boot/dts/amlogic/meson-axg-apollo.dts | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/amlogic/meson-axg-apollo.dts b/arch/arm64/boot/dts/amlogic/meson-axg-apollo.dts
+index 1a85af0bc0c7..1202e165cb87 100644
+--- a/arch/arm64/boot/dts/amlogic/meson-axg-apollo.dts
++++ b/arch/arm64/boot/dts/amlogic/meson-axg-apollo.dts
+@@ -20,6 +20,15 @@
+ 		stdout-path = "serial0:115200n8";
+ 	};
+ 
++	reserved-memory {
++		ramoops@f9800000 {
++			compatible = "ramoops";
++			reg = <0 0x0f400000 0 0x10000>;
++			record-size = <0x4000>;
++			console-size = <0x0>;
++		};
++	};
++
+ 	emmc_pwrseq: emmc-pwrseq {
+ 		compatible = "mmc-pwrseq-emmc";
+ 		reset-gpios = <&gpio BOOT_9 GPIO_ACTIVE_LOW>;
+-- 
+2.30.2
+

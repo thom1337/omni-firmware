@@ -1,0 +1,45 @@
+From 3d01157fca0c4d6224bd52f55a4664bcbd5d1c08 Mon Sep 17 00:00:00 2001
+From: Carlo Caione <ccaione@baylibre.com>
+Date: Sun, 18 Nov 2018 20:07:11 +0000
+Subject: [PATCH 36/55] mender: apollo: Do not set CONFIG_ENV_OFFSET_REDUND
+
+We do not need a redundant env.
+
+Signed-off-by: Carlo Caione <ccaione@baylibre.com>
+---
+ include/config_defaults.h | 1 -
+ include/config_mender.h   | 7 -------
+ 2 files changed, 8 deletions(-)
+
+diff --git a/include/config_defaults.h b/include/config_defaults.h
+index e81f6467b7..3dbe23507d 100644
+--- a/include/config_defaults.h
++++ b/include/config_defaults.h
+@@ -22,6 +22,5 @@
+ #endif
+ #define CONFIG_ENV_SIZE 0x2000
+ #define CONFIG_ENV_OFFSET 0x0
+-#define CONFIG_ENV_OFFSET_REDUND 0x800000
+ #define CONFIG_SYS_MMC_ENV_DEV 0
+ #define CONFIG_SYS_MMC_ENV_PART 1
+diff --git a/include/config_mender.h b/include/config_mender.h
+index 6beea14d98..7306e4cfb2 100644
+--- a/include/config_mender.h
++++ b/include/config_mender.h
+@@ -61,13 +61,6 @@
+ # else
+ #  define CONFIG_ENV_OFFSET MENDER_UBOOT_ENV_STORAGE_DEVICE_OFFSET_1
+ # endif
+-# if defined(CONFIG_ENV_OFFSET_REDUND)
+-#  if CONFIG_ENV_OFFSET_REDUND != MENDER_UBOOT_ENV_STORAGE_DEVICE_OFFSET_2
+-#   error CONFIG_ENV_OFFSET_REDUND is not the same as MENDER_ENV_OFFSET_REDUND. Either set it to the same value (check for example in the defconfig file), or make sure it is not defined at all. Make sure that: 1) All the instructions at docs.mender.io/devices/integrating-with-u-boot have been followed. 2) All required layers are included in bblayers.conf, including any board specific layers such as meta-mender-<board>
+-#  endif
+-# else
+-#  define CONFIG_ENV_OFFSET_REDUND MENDER_UBOOT_ENV_STORAGE_DEVICE_OFFSET_2
+-# endif
+ # ifdef CONFIG_SYS_MMC_ENV_DEV
+ #  if CONFIG_SYS_MMC_ENV_DEV != MENDER_UBOOT_STORAGE_DEVICE
+ #   error CONFIG_SYS_MMC_ENV_DEV is not the same as MENDER_UBOOT_STORAGE_DEVICE. Either set it to the same value (check for example in the defconfig file), or make sure it is not defined at all. Make sure that: 1) All the instructions at docs.mender.io/devices/integrating-with-u-boot have been followed. 2) All required layers are included in bblayers.conf, including any board specific layers such as meta-mender-<board>
+-- 
+2.19.1
+

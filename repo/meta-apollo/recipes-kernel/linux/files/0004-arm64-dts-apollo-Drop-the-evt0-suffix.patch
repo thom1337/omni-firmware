@@ -1,0 +1,45 @@
+From 416b6671fe355848139bed53fed466bb120e01f9 Mon Sep 17 00:00:00 2001
+From: Carlo Caione <ccaione@baylibre.com>
+Date: Fri, 14 Dec 2018 09:49:04 +0000
+Subject: [PATCH 04/14] arm64: dts: apollo: Drop the evt0 suffix
+
+Signed-off-by: Carlo Caione <ccaione@baylibre.com>
+---
+ arch/arm64/boot/dts/amlogic/Makefile                          | 1 +
+ .../{meson-axg-apollo-evt0.dts => meson-axg-apollo.dts}       | 4 ++--
+ 2 files changed, 3 insertions(+), 2 deletions(-)
+ rename arch/arm64/boot/dts/amlogic/{meson-axg-apollo-evt0.dts => meson-axg-apollo.dts} (95%)
+
+diff --git a/arch/arm64/boot/dts/amlogic/Makefile b/arch/arm64/boot/dts/amlogic/Makefile
+index b46feb02e3fa..b0c9785fd046 100644
+--- a/arch/arm64/boot/dts/amlogic/Makefile
++++ b/arch/arm64/boot/dts/amlogic/Makefile
+@@ -7,6 +7,7 @@ dtb-$(CONFIG_ARCH_MESON) += meson-g12b-a311d-khadas-vim3.dtb
+ dtb-$(CONFIG_ARCH_MESON) += meson-g12b-s922x-khadas-vim3.dtb
+ dtb-$(CONFIG_ARCH_MESON) += meson-g12b-odroid-n2.dtb
+ dtb-$(CONFIG_ARCH_MESON) += meson-axg-apollo-evt0.dtb
++dtb-$(CONFIG_ARCH_MESON) += meson-axg-apollo.dtb
+ dtb-$(CONFIG_ARCH_MESON) += meson-gxbb-nanopi-k2.dtb
+ dtb-$(CONFIG_ARCH_MESON) += meson-gxbb-nexbox-a95x.dtb
+ dtb-$(CONFIG_ARCH_MESON) += meson-gxbb-odroidc2.dtb
+diff --git a/arch/arm64/boot/dts/amlogic/meson-axg-apollo-evt0.dts b/arch/arm64/boot/dts/amlogic/meson-axg-apollo.dts
+similarity index 95%
+rename from arch/arm64/boot/dts/amlogic/meson-axg-apollo-evt0.dts
+rename to arch/arm64/boot/dts/amlogic/meson-axg-apollo.dts
+index 24be4a8b69b5..76792944fd99 100644
+--- a/arch/arm64/boot/dts/amlogic/meson-axg-apollo-evt0.dts
++++ b/arch/arm64/boot/dts/amlogic/meson-axg-apollo.dts
+@@ -8,8 +8,8 @@
+ #include "meson-axg.dtsi"
+ 
+ / {
+-	compatible = "avast,apollo-evt0", "amlogic,a113d", "amlogic,meson-axg";
+-	model = "Avast Apollo EVT0 Board";
++	compatible = "avast,apollo", "amlogic,a113d", "amlogic,meson-axg";
++	model = "Avast Apollo Board";
+ 
+ 	aliases {
+ 		serial0 = &uart_AO;
+-- 
+2.30.2
+

@@ -1,0 +1,29 @@
+MACHINE ?= "meson-apollo"
+DISTRO ?= "apollo-poky"
+
+APOLLO_RELEASE = "${DISTRO_VERSION}"
+APOLLO_ENVIRONMENT = "prod"
+
+EXTRA_IMAGE_FEATURES = '${@bb.utils.contains_any("APOLLO_ENVIRONMENT", "prod", "", "debug-tweaks", d)}'
+VOLATILE_LOG_DIR = "${@bb.utils.contains('EXTRA_IMAGE_FEATURES', 'debug-tweaks', '0', '1', d)}"
+USER_CLASSES ?= "buildstats image-mklibs image-prelink"
+BUILD_ID = "UNSET"
+
+PATCHRESOLVE = "noop"
+BB_DISKMON_DIRS ??= "\
+    STOPTASKS,${TMPDIR},1G,100K \
+    STOPTASKS,${DL_DIR},1G,100K \
+    STOPTASKS,${SSTATE_DIR},1G,100K \
+    STOPTASKS,/tmp,100M,100K \
+    ABORT,${TMPDIR},100M,1K \
+    ABORT,${DL_DIR},100M,1K \
+    ABORT,${SSTATE_DIR},100M,1K \
+    ABORT,/tmp,10M,1K"
+
+PACKAGECONFIG_append_pn-qemu-native = " sdl"
+PACKAGECONFIG_append_pn-nativesdk-qemu = " sdl"
+
+CONF_VERSION = "1"
+
+COPY_LIC_MANIFEST = "1"
+COPY_LIC_DIRS = "1"
