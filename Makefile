@@ -1,13 +1,14 @@
 TARGET ?= apollo-image
 
-.PHONY: docker-build build
+.PHONY: prepare docker-build build
 
-all: .prepare docker-build build
+all: prepare docker-build build
 
-.prepare:
+prepare:
+	git submodule init
+	git submodule update
 	cd repo/meta-openembedded; git am ../../patches/meta-openembedded/*
 	cd repo/poky; git am ../../patches/poky/*
-	touch .prepare
 
 docker-build:
 	docker build -f Dockerfile --build-arg UID=$(shell id -u) --build-arg GID=$(shell id -g) -t omni-ubuntu .
