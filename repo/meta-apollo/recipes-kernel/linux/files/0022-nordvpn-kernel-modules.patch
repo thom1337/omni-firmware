@@ -1,0 +1,23 @@
+From 39f7f6b422de1ef2e867b5206d48025a093c1c04 Mon Sep 17 00:00:00 2001
+From: Thomas Maarseveen <maarseveent@gmail.com>
+Date: Thu, 1 Aug 2024 14:08:33 +0200
+Subject: [PATCH] Add NordVPN kernel modules
+
+---
+ arch/arm64/configs/apollo_defconfig | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/arch/arm64/configs/apollo_defconfig b/arch/arm64/configs/apollo_defconfig
+index bb90000b1744..6a967d51874f 100644
+--- a/arch/arm64/configs/apollo_defconfig
++++ b/arch/arm64/configs/apollo_defconfig
+@@ -330,3 +330,6 @@ CONFIG_PANIC_TIMEOUT=15
+ # CONFIG_DEBUG_PREEMPT is not set
+ # CONFIG_FTRACE is not set
+ # CONFIG_RUNTIME_TESTING_MENU is not set
++CONFIG_IP_MULTIPLE_TABLES=y
++CONFIG_IP_MROUTE=y
++CONFIG_IP_MROUTE_MULTIPLE_TABLES=y
+-- 
+2.39.2
+
