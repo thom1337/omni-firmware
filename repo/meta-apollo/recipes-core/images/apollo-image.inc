@@ -30,6 +30,9 @@ IMAGE_INSTALL_append = " \
     sed \
     tcpdump \
     u-boot-fw-utils-apollo \
+    openssh-sshd \
+    openssh-scp \
+    netcat-openbsd \
 "
 
 IMAGE_FSTYPES_remove = "wic"
