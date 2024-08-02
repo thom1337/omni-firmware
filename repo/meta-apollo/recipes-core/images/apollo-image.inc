@@ -34,6 +34,7 @@ IMAGE_INSTALL_append = " \
     openssh-scp \
     netcat-openbsd \
     vim \
+    htop \
 "
 
 IMAGE_FSTYPES_remove = "wic"
