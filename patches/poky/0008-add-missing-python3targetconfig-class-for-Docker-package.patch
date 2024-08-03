@@ -1,0 +1,48 @@
+From d8003a18af22e997ac4fd48bd2e60a1953a69fc2 Mon Sep 17 00:00:00 2001
+From: Thomas Maarseveen <thomas@doflo.com>
+Date: Sat, 3 Aug 2024 04:38:26 -0700
+Subject: [PATCH] Add missing python3targetconfig class for Docker package
+
+---
+ meta/classes/python3targetconfig.bbclass | 29 ++++++++++++++++++++++++
+ 1 file changed, 29 insertions(+)
+ create mode 100644 meta/classes/python3targetconfig.bbclass
+
+diff --git a/meta/classes/python3targetconfig.bbclass b/meta/classes/python3targetconfig.bbclass
+new file mode 100644
+index 0000000000..6db381ba31
+--- /dev/null
++++ b/meta/classes/python3targetconfig.bbclass
+@@ -0,0 +1,29 @@
++inherit python3native
++
++EXTRA_PYTHON_DEPENDS ?= ""
++EXTRA_PYTHON_DEPENDS_class-target = "python3"
++DEPENDS_append = " ${EXTRA_PYTHON_DEPENDS}"
++
++do_configure_prepend_class-target() {
++        export _PYTHON_SYSCONFIGDATA_NAME="_sysconfigdata"
++}
++
++do_compile_prepend_class-target() {
++        export _PYTHON_SYSCONFIGDATA_NAME="_sysconfigdata"
++}
++
++do_install_prepend_class-target() {
++        export _PYTHON_SYSCONFIGDATA_NAME="_sysconfigdata"
++}
++
++do_configure_prepend-class-nativesdk() {
++        export _PYTHON_SYSCONFIGDATA_NAME="_sysconfigdata"
++}
++
++do_compile_prepend-class-nativesdk() {
++        export _PYTHON_SYSCONFIGDATA_NAME="_sysconfigdata"
++}
++
++do_install_prepend-class-nativesdk() {
++        export _PYTHON_SYSCONFIGDATA_NAME="_sysconfigdata"
++}
+-- 
+2.34.1
+

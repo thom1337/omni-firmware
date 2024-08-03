@@ -35,6 +35,7 @@ IMAGE_INSTALL_append = " \
     netcat-openbsd \
     vim \
     htop \
+    docker-ce \
 "
 
 IMAGE_FSTYPES_remove = "wic"

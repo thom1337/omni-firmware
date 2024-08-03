@@ -15,10 +15,12 @@ BBLAYERS ?= " \
   ${LAYERS}/meta-openembedded/meta-networking \
   ${LAYERS}/meta-openembedded/meta-python \
   ${LAYERS}/meta-openembedded/meta-perl \
+  ${LAYERS}/meta-openembedded/meta-filesystems \
   ${LAYERS}/meta-apollo \
   ${LAYERS}/meta-gplv2 \
   ${LAYERS}/meta-meson \
   ${LAYERS}/meta-smarthome-common \
+  ${LAYERS}/meta-virtualization \
   ${LAYERS}/version \
 "
 
