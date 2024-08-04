@@ -50,6 +50,7 @@ jobs:
         docker run \
           --env UID=$(id -u) \
           --env GID=$(id -g) \
+          --env TEMPDIR="/workdir/temp" \
           --rm=true \
           -v $(pwd):/workdir \
           omni-ubuntu:latest \
