@@ -28,6 +28,10 @@ jobs:
       run: git am ../../patches/poky/*
       working-directory: repo/poky/
 
+    - name: Enable option to reduce disk space
+      run: echo 'INHERIT += "rm_work_and_downloads"' >> ./local.conf.example
+      working-directory: repo/meta-smarthome-common/conf/
+
     - name: Build Docker image
       run: docker build -f Dockerfile --build-arg UID=$(id -u) --build-arg GID=$(id -g) -t omni-ubuntu:latest .
 
