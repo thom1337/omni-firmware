@@ -1,0 +1,55 @@
+name: Build Apollo Image
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 1440  # 24 hours (1440 minutes)
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        submodules: true  # Initialize and update submodules
+
+    - run: |
+        git config --global user.name "GitHub action"
+        git config --global user.email "GitHub action"
+
+    - name: Apply patches to meta-openembedded
+      run: git am ../../patches/meta-openembedded/*
+      working-directory: repo/meta-openembedded/
+
+    - name: Apply patches to poky
+      run: git am ../../patches/poky/*
+      working-directory: repo/poky/
+
+    - name: Build Docker image
+      run: docker build -f Dockerfile --build-arg UID=$(id -u) --build-arg GID=$(id -g) -t omni-ubuntu:latest .
+
+    - name: Build Apollo Image
+      run: |
+        docker run \
+          --env UID=$(id -u) \
+          --env GID=$(id -g) \
+          --rm=true \
+          -v $(pwd):/workdir \
+          omni-ubuntu:latest \
+          /workdir/scripts/build_apollo_image.sh apollo-image
+
+    - name: Compress rootfs
+      run: bzip2 apollo-image-6.6.1-prod-meson-apollo.ext4
+      working-directory: build/tmp/deploy/images/meson-apollo/
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: build-artifacts
+        path: |
+            ./build/tmp/deploy/images/meson-apollo/apollo-image-6.6.1-prod-meson-apollo.ext4.bz2
+            ./build/tmp/deploy/images/meson-apollo/apollo-image-6.6.1-prod-meson-apollo.manifest
+            ./build/tmp/deploy/images/meson-apollo/apollo-image-6.6.1-prod-meson-apollo.testdata.json
