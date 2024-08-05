@@ -57,7 +57,7 @@ jobs:
           /workdir/scripts/build_apollo_image.sh apollo-image
 
     - name: Compress rootfs
-      run: bzip2 apollo-image-6.6.1-prod-meson-apollo.ext4
+      run: bzip2 -f apollo-image-6.6.1-prod-meson-apollo.ext4
       working-directory: build/tmp/deploy/images/meson-apollo/
 
     - name: Upload build artifacts
