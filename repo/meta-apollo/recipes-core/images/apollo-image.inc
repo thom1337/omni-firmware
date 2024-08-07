@@ -36,6 +36,8 @@ IMAGE_INSTALL_append = " \
     vim \
     htop \
     docker-ce \
+    nmap \
+    openvpn \
 "
 
 IMAGE_FSTYPES_remove = "wic"
