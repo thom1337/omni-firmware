@@ -1,1 +1,1 @@
-RDEPENDS_${PN} += "diffutils gzip tar"
+RDEPENDS:${PN} += "diffutils gzip tar"

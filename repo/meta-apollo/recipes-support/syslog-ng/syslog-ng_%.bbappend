@@ -1,4 +1,4 @@
-FILESEXTRAPATHS_prepend := "${THISDIR}/files:"
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
 PR = "1"
 
@@ -8,7 +8,7 @@ SRC_URI += " \
 	file://syslog-ng.service \
 "
 
-do_install_append() {
+do_install:append() {
 	install -D -m 0644 ${WORKDIR}/syslog-ng.logrotate ${D}${sysconfdir}/logrotate.d/syslog-ng.conf
 
 	# remove original instance-based service file
@@ -26,4 +26,4 @@ do_install_append() {
 	mv ${D}${sysconfdir}/default/${BPN}@default ${D}${sysconfdir}/default/${BPN}
 }
 
-SYSTEMD_SERVICE_${PN} = "${BPN}.service"
+SYSTEMD_SERVICE:${PN} = "${BPN}.service"

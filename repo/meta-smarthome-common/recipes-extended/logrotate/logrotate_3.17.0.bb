@@ -25,7 +25,7 @@ PACKAGECONFIG ?= "${@bb.utils.filter('DISTRO_FEATURES', 'acl selinux', d)}"
 PACKAGECONFIG[acl] = ",,acl"
 PACKAGECONFIG[selinux] = ",,libselinux"
 
-CONFFILES_${PN} += "${localstatedir}/lib/logrotate.status \
+CONFFILES:${PN} += "${localstatedir}/lib/logrotate.status \
                     ${sysconfdir}/logrotate.conf \
                     ${sysconfdir}/logrotate.d/btmp \
                     ${sysconfdir}/logrotate.d/wtmp"
@@ -49,7 +49,7 @@ OS_NAME = "Linux"
 
 inherit autotools systemd
 
-SYSTEMD_SERVICE_${PN} = "\
+SYSTEMD_SERVICE:${PN} = "\
     ${BPN}.service \
     ${BPN}.timer \
 "

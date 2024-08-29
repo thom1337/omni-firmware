@@ -1,6 +1,6 @@
 APOLLO_RELEASE ??= "UNKNOWN"
 
-FILESEXTRAPATHS_prepend := "${THISDIR}/files:"
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
 hostname="avast-omni"
 
@@ -9,7 +9,7 @@ PR = "1"
 SRC_URI += "file://motd.in"
 SRC_URI += "file://fstab-logs"
 
-do_install_append() {
+do_install:append() {
     echo "${APOLLO_RELEASE}" > ${D}/${sysconfdir}/release
     sed -e 's|@MACHINE@|${MACHINE}|g' \
         -e 's|@VERSION@|${APOLLO_RELEASE}|g' \
@@ -26,5 +26,5 @@ do_install_append() {
     rm -f  "${D}${sysconfdir}/fstab"
 }
 
-FILES_${PN} += "${sysconfdir}/motd"
-FILES_${PN}_remove = "${sysconfdir}/fstab"
+FILES:${PN} += "${sysconfdir}/motd"
+FILES:${PN}:remove = "${sysconfdir}/fstab"

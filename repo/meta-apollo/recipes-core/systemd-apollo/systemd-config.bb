@@ -1,8 +1,8 @@
-FILESEXTRAPATHS_prepend := "${THISDIR}/files:"
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
 LICENSE = "CLOSED"
 
-S = "${WORKDIR}/"
+S = "${WORKDIR}"
 
 SRC_URI = "file://system.conf"
 

@@ -1,10 +1,10 @@
-FROM ubuntu:18.04
+FROM ubuntu:24.04
 
 ARG GID
 ARG UID
 
 # disable interactive functions
-ENV DEBIAN_FRONTEND noninteractive
+ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && \
     # install needed packages
@@ -14,7 +14,7 @@ RUN apt-get update && \
       less vim curl ssh \
       gawk wget git-core diffstat zip unzip texinfo gcc-multilib build-essential \
       chrpath socat repo libsdl1.2-dev xterm cpio file bison \
-      screen ncurses-dev sudo \
+      screen ncurses-dev sudo lz4 zstd python3 python3-setuptools \
     # missing tzdata in 18.04 beta
     && apt-get install -y tzdata iproute2 iputils-ping uml-utilities iptables && \
     # upgrade OS
@@ -31,12 +31,13 @@ RUN /bin/echo -ne "Host *\n    StrictHostKeyChecking no\n    UserKnownHostsFile=
 RUN locale-gen en_US.UTF-8
 ENV LANG='en_US.UTF-8' LANGUAGE='en_US:en' LC_ALL='en_US.UTF-8' TERM=screen
 
-ENV UID $UID
-ENV GID $GID
+ENV UID=$UID
+ENV GID=$GID
 
 RUN echo "GID ... $GID"
 RUN echo "UID ... $UID"
-RUN addgroup --gid $GID builder
+RUN addgroup --gid $GID builder || groupmod -n builder ubuntu
+RUN deluser ubuntu || true
 RUN adduser --gid $GID --uid ${UID} --home /home/builder --no-create-home --shell /bin/bash --disabled-password --gecos "" builder
 RUN id -u builder
 RUN echo "builder      ALL=(ALL)       NOPASSWD: ALL" >> /etc/sudoers

@@ -33,7 +33,7 @@ python () {
     d.setVar("MAKE_CHECK_BOARDFLAGS", ("/" + "/".join(args)) if len(args) != 0 else "")
 }
 
-python check_prepare() {
+python check:prepare() {
     def generate_qemu_linux_user_config(d):
         content = []
         content.append('load_generic_config "sim"')
@@ -104,4 +104,3 @@ python check_prepare() {
         f.write("lappend boards_dir {0}\n".format(dejagnudir))
         f.write("set CFLAGS_FOR_TARGET \"{0}\"\n".format(d.getVar("TOOLCHAIN_OPTIONS")))
 }
-

@@ -1,3 +1,3 @@
-RDEPENDS_${PN}_remove = "nativesdk-qemu"
-RDEPENDS_${PN}_remove = "nativesdk-qemu-helper"
-RDEPENDS_${PN}_remove = "nativesdk-meson"
+RDEPENDS:${PN}:remove = "nativesdk-qemu"
+RDEPENDS:${PN}:remove = "nativesdk-qemu-helper"
+RDEPENDS:${PN}:remove = "nativesdk-meson"

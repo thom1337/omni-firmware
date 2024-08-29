@@ -1,9 +1,9 @@
-FILESEXTRAPATHS_prepend := "${THISDIR}/files:"
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
 SRC_URI += "file://inputrc"
 
-do_install_append() {
+do_install:append() {
 	install -D -m 0644 ${WORKDIR}/inputrc ${D}${sysconfdir}/inputrc
 }
 
-CONFFILES_${PN} += "${sysconfdir}/inputrc"
+CONFFILES:${PN} += "${sysconfdir}/inputrc"

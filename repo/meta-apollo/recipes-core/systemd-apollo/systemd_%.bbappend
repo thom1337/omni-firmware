@@ -1,6 +1,6 @@
-FILESEXTRAPATHS_prepend := "${THISDIR}/files:"
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
-PACKAGECONFIG_append = " coredump"
+PACKAGECONFIG:append = " coredump"
 
 SERIAL_CONSOLES = "115200;ttyAML0"
 
@@ -15,15 +15,15 @@ SRC_URI += "file://networkd.conf"
 SRC_URI += "file://10-enable_rps.conf"
 SRC_URI += "file://journald.conf"
 
-PACKAGECONFIG_remove = "hibernate"
-PACKAGECONFIG_remove = "vconsole"
+PACKAGECONFIG:remove = "hibernate"
+PACKAGECONFIG:remove = "vconsole"
 
 PR = "r3"
 
-RDEPENDS_libsystemd += "${PN} (= ${EXTENDPKGV})"
+RDEPENDS:libsystemd += "${PN} (= ${EXTENDPKGV})"
 DEPENDS += " coreutils-native"
 
-do_install_append() {
+do_install:append() {
     # mask systemd-journald-audit
     ln -sf /dev/null ${D}/etc/systemd/system/systemd-journald-audit.socket
 
@@ -59,13 +59,13 @@ do_install_append() {
     rm -f ${D}/etc/systemd/system.conf
 }
 
-pkg_postinst_${PN} () {
+pkg_postinst:${PN} () {
     sed -e '/^hosts:/s/\s*\<myhostname\>//' \
         -e 's/\(^hosts:.*\)/\1 myhostname/' \
         -i $D${sysconfdir}/nsswitch.conf
 }
 
-CONFFILES_${PN} = "${sysconfdir}/resolv.conf"
-FILES_${PN} += "${sysconfdir}/resolv.conf"
+CONFFILES:${PN} = "${sysconfdir}/resolv.conf"
+FILES:${PN} += "${sysconfdir}/resolv.conf"
 ALTERNATIVE_LINK_NAME[resolv-conf] = ""
 ALTERNATIVE_TARGET[resolv-conf] = "${sysconfdir}/resolv.conf"

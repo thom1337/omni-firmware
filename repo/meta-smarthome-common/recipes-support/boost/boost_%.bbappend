@@ -1,4 +1,4 @@
-FILESEXTRAPATHS_prepend := "${THISDIR}/boost:"
+FILESEXTRAPATHS:prepend := "${THISDIR}/boost:"
 
 PR = "3"
 

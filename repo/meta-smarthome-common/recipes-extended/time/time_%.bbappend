@@ -1,4 +1,4 @@
-FILESEXTRAPATHS_prepend := "${THISDIR}/time:"
+FILESEXTRAPATHS:prepend := "${THISDIR}/time:"
 
 PR = "1"
 

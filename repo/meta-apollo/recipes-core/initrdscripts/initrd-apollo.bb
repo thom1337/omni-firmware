@@ -10,12 +10,12 @@ do_install() {
     mknod -m 0600 "${D}/dev/console" c 5 1
 }
 
-FILES_${PN} = "\
+FILES:${PN} = "\
     /init \
     /dev \
 "
 
-RDEPENDS_${PN} += "\
+RDEPENDS:${PN} += "\
     busybox \
     util-linux-mount \
 "

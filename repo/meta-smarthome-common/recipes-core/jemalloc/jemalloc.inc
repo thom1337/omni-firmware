@@ -21,17 +21,17 @@ do_configure() {
 }
 
 PACKAGES =+ "${PN}-bin"
-FILES_${PN}-bin += "${bindir}/jeprof \
+FILES:${PN}-bin += "${bindir}/jeprof \
     ${bindir}/jemalloc.sh \
     ${bindir}/jemalloc-config \
 "
 
-DEBIAN_NOAUTONAME_${PN} = "1"
-DEBIAN_NOAUTONAME_${PN}-bin = "1"
-DEBIAN_NOAUTONAME_${PN}-dbg = "1"
-DEBIAN_NOAUTONAME_${PN}-dev = "1"
-DEBIAN_NOAUTONAME_${PN}-staticdev = "1"
-DEBIAN_NOAUTONAME_${PN}-doc = "1"
-DEBIAN_NOAUTONAME_${PN}-src = "1"
+DEBIAN_NOAUTONAME:${PN} = "1"
+DEBIAN_NOAUTONAME:${PN}-bin = "1"
+DEBIAN_NOAUTONAME:${PN}-dbg = "1"
+DEBIAN_NOAUTONAME:${PN}-dev = "1"
+DEBIAN_NOAUTONAME:${PN}-staticdev = "1"
+DEBIAN_NOAUTONAME:${PN}-doc = "1"
+DEBIAN_NOAUTONAME:${PN}-src = "1"
 
 DEPENDS += "libxslt-native"

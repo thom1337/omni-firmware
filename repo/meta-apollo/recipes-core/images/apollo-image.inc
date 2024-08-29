@@ -4,12 +4,11 @@ python __anonymous() {
         d.setVar('EXTRA_USERS_PARAMS', 'usermod -p \'{}\' root;'.format(rootpw))
 }
 
-IMAGE_INSTALL_append = " \
+IMAGE_INSTALL:append = " \
     avahi-daemon \
     base-files-fstab-volatile \
     coreutils \
     cpio \
-    dhcp-server \
     e2fsprogs-mke2fs \
     findutils \
     gawk \
@@ -35,12 +34,12 @@ IMAGE_INSTALL_append = " \
     netcat-openbsd \
     vim \
     htop \
-    docker-ce \
     nmap \
+    docker-ce \
     openvpn \
 "
 
-IMAGE_FSTYPES_remove = "wic"
+IMAGE_FSTYPES:remove = "wic"
 IMAGE_FSTYPES += "ext4"
 
 inherit core-image extrausers
@@ -74,27 +73,17 @@ TOOLCHAIN_HOST_TASK += " \
     nativesdk-protobuf-c-compiler \
 "
 
-IMAGE_INSTALL_append = " \
+IMAGE_INSTALL:append = " \
     avahi-daemon \
     bc \
     conntrack-tools \
     curl \
-    dnsmasq \
-    jemalloc \
     jq \
     openssl \
     util-linux \
 "
 
-IMAGE_INSTALL_append = " \
-    perf \
-"
-# libraries required by skyline components
-IMAGE_INSTALL_append = " \
-    packagegroup-skyline-rdep \
-"
-
-IMAGE_BASENAME_append = "-${DISTRO_VERSION}-${APOLLO_ENVIRONMENT}"
+IMAGE_BASENAME:append = "-${DISTRO_VERSION}-${APOLLO_ENVIRONMENT}"
 
 SDK_POSTPROCESS_COMMAND += "remove_locales; "
 remove_locales() {

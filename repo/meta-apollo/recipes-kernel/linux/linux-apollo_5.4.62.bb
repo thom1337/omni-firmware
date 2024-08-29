@@ -3,7 +3,7 @@ PR = "r5"
 
 DEPENDS += "rsync-native coreutils-native"
 
-FILESEXTRAPATHS_prepend := "${THISDIR}/files:"
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
 SRCREV = "933cf1c2c075f44c7b6837b6201e0db2d488835a"
 SRC_URI = "git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git;protocol=git;branch=linux-5.4.y \
@@ -23,7 +23,6 @@ SRC_URI = "git://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git;protoc
            file://0014-meson-axg-apollo-disable-force_thresh_dma_mode.patch \
            file://defconfig \
            file://0016-perf-Make-perf-able-to-build-with-latest-libbfd.patch \
-           file://0021-avastmark-extra-marks-for-packets-and-connections.patch \
 "
 
 # make perf compileable with gcc10
@@ -36,7 +35,7 @@ SRC_URI += " \
 
 # add kernel modules needed for NordVPN
 SRC_URI += " \
-    file://0022-nordvpn-kernel-modules.patch \
+    file://0021-nordvpn-kernel-modules.patch \
 "
 
 KERNEL_VERSION_SANITY_SKIP="1"
@@ -48,4 +47,4 @@ require recipes-kernel/linux/linux-meson.inc
 # Checksum changed on 4.17
 LIC_FILES_CHKSUM = "file://COPYING;md5=bbea815ee2795b2f4230826c0c6b8814"
 
-FILES_${KERNEL_PACKAGE_NAME}-base += "${nonarch_base_libdir}/modules/${KERNEL_VERSION}/modules.builtin.modinfo"
+FILES:${KERNEL_PACKAGE_NAME}-base += "${nonarch_base_libdir}/modules/${KERNEL_VERSION}/modules.builtin.modinfo"

@@ -1,7 +1,7 @@
 DESCRIPTION = "Apollo EVT0 u-boot"
 SECTION = "bootloaders"
 
-FILESEXTRAPATHS_prepend := "${THISDIR}/files:"
+FILESEXTRAPATHS:prepend := "${THISDIR}/files:"
 
 LICENSE = "GPLv2+"
 LIC_FILES_CHKSUM = "file://Licenses/README;md5=30503fd321432fc713238f582193b78e"
@@ -63,6 +63,7 @@ SRC_URI = "git://git.denx.de/u-boot.git \
            file://0053-apollo-Implement-LED-boot-protocol-as-dictated-by-Av.patch \
            file://0054-apollo-Move-force_run_eol-definition.patch \
            file://0055-apollo-Run-MFC-on-first-boot.patch \
+           file://0100-fix-yylloc-error.patch \
            file://fw_env.config \
 "
 

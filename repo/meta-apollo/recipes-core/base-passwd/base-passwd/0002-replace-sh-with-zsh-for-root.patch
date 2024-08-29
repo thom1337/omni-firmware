@@ -18,9 +18,9 @@ index e1c32ff..c685d09 100644
 @@ -1,4 +1,4 @@
 -root::0:0:root:/root:/bin/sh
 +root::0:0:root:/root:/bin/zsh
- daemon:*:1:1:daemon:/usr/sbin:/bin/sh
- bin:*:2:2:bin:/bin:/bin/sh
- sys:*:3:3:sys:/dev:/bin/sh
+ daemon:*:1:1:daemon:/usr/sbin:/sbin/nologin
+ bin:*:2:2:bin:/bin:/sbin/nologin
+ sys:*:3:3:sys:/dev:/sbin/nologin
 -- 
 2.6.5
 

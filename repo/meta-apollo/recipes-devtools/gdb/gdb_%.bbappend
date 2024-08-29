@@ -1,1 +1,1 @@
-PACKAGECONFIG_remove = "readline"
+PACKAGECONFIG:remove = "readline"

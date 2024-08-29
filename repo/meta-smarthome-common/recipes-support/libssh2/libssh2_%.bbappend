@@ -1,7 +1,7 @@
 DISABLE_STATIC = ""
 PR="r5"
 
-do_install_append() {
+do_install:append() {
     sed -i "s/Requires.private:/Requires:/g" ${D}/${libdir}/pkgconfig/libssh2.pc
 }
 
