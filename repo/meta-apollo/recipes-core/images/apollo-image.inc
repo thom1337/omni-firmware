@@ -32,7 +32,8 @@ IMAGE_INSTALL:append = " \
     openssh-sshd \
     openssh-scp \
     netcat-openbsd \
-    vim \
+    zlib \
+    bash \
     htop \
     nmap \
     docker-ce \
