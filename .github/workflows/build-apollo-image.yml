@@ -31,14 +31,6 @@ jobs:
         git config --global user.name "GitHub action"
         git config --global user.email "GitHub action"
 
-    - name: Apply patches to meta-openembedded
-      run: git am ../../patches/meta-openembedded/*
-      working-directory: repo/meta-openembedded/
-
-    - name: Apply patches to poky
-      run: git am ../../patches/poky/*
-      working-directory: repo/poky/
-
     - name: Enable option to reduce disk space
       run: echo 'INHERIT += "rm_work_and_downloads"' >> ./local.conf.example
       working-directory: repo/meta-smarthome-common/conf/
