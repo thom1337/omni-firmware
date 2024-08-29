@@ -33,11 +33,6 @@ SRC_URI += " \
     file://0017-perf-share-some-global-variables-to-fix-build-with-g.patch \
 "
 
-# add kernel modules needed for NordVPN
-SRC_URI += " \
-    file://0021-nordvpn-kernel-modules.patch \
-"
-
 KERNEL_VERSION_SANITY_SKIP="1"
 
 KERNEL_CLASSES = "kernel-uimage-meson"
