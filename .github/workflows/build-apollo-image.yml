@@ -57,7 +57,14 @@ jobs:
       with:
         name: build-artifacts
         path: |
-            ./build/tmp/deploy/images/meson-apollo/Image
             ./build/tmp/deploy/images/meson-apollo/apollo-image-6.6.1-prod-meson-apollo.ext4.bz2
             ./build/tmp/deploy/images/meson-apollo/apollo-image-6.6.1-prod-meson-apollo.manifest
             ./build/tmp/deploy/images/meson-apollo/apollo-image-6.6.1-prod-meson-apollo.testdata.json
+            ./build/tmp/deploy/images/meson-apollo/apollo-initramfs-image-meson-apollo.cpio.gz
+            ./build/tmp/deploy/images/meson-apollo/apollo-initramfs-image-meson-apollo.manifest
+            ./build/tmp/deploy/images/meson-apollo/apollo-initramfs-image-meson-apollo.testdata.json
+            ./build/tmp/deploy/images/meson-apollo/extlinux.conf
+            ./build/tmp/deploy/images/meson-apollo/Image
+            ./build/tmp/deploy/images/meson-apollo/meson-axg-apollo.dtb
+            ./build/tmp/deploy/images/meson-apollo/modules-meson-apollo.tgz
+            ./build/tmp/deploy/images/meson-apollo/u-boot.bin
