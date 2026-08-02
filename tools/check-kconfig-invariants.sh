@@ -53,7 +53,7 @@ INVARIANTS=$(
 CONFIG_REALTEK_PHY|y|fail|STRICT =y: absent from Armbian's meson64 config (it enables ICPLUS_PHY for JetHub). As =m the MAC probes before the module loads, phylib binds genphy and you get "gigabit that mostly works" with the RX/TX delay never programmed.
 CONFIG_STMMAC_ETH|ym|fail|dwmac core for &ethmac; without it the single NIC does not exist and the box is unreachable in a closet.
 CONFIG_STMMAC_PLATFORM|ym|fail|OF glue for the dwmac core; the meson-axg &ethmac node binds through it.
-CONFIG_DWMAC_MESON8B|ym|fail|meson8b/axg dwmac glue driver; provides the RGMII clock setup the s400-derived &ethmac node needs.
+CONFIG_DWMAC_MESON|ym|fail|Amlogic dwmac glue; provides the RGMII clock setup the s400-derived &ethmac node needs. NOTE the symbol is DWMAC_MESON even though the driver file is dwmac-meson8b.c -- there is no CONFIG_DWMAC_MESON8B (verified against v6.18 drivers/net/ethernet/stmicro/stmmac/Kconfig:114).
 # --- Storage and rootfs ----------------------------------------------------
 CONFIG_MMC_MESON_GX|y|fail|STRICT =y: eMMC host controller. Both A/B rootfs slots live on it, so it cannot be a module in a modules-in-rootfs layout.
 CONFIG_EXT4_FS|y|fail|STRICT =y: every slot (p1/p2), /data (p3) and both overlay uppers (p5/p6) are ext4 and are mounted before any module is reachable.
