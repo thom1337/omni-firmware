@@ -391,6 +391,41 @@ Neither failure is a DTS defect. The device tree itself is validated on real
 silicon for eMMC, storage, console, LEDs, the reset button and the NAND
 conflict; what is left is one kernel-config line and one thermal-sensor question.
 
+#### Second trial boot: the NIC, and risk #3 answered
+
+The rebuild the config fix implies would have cost an hour plus another 33-minute
+push. Unnecessary — `CONFIG_STMMAC_ETH` and `CONFIG_STMMAC_PLATFORM` were already
+`=y`, so the only missing piece was **one 19 KB module**, `dwmac-meson8b.ko`.
+Pushed in seconds, `insmod`ed on a second trial boot:
+
+```
+meson8b-dwmac ff3f0000.ethernet: User ID: 0x11, Synopsys ID: 0x37   DWMAC1000
+meson8b-dwmac ff3f0000.ethernet eth0: PHY [stmmac-0:00] driver [RTL8211F Gigabit Ethernet] (irq=26)
+meson8b-dwmac ff3f0000.ethernet eth0: configuring for phy/rgmii link mode
+```
+
+| Risk #3 sub-question | Answer |
+|---|---|
+| Does the MAC probe from our `&ethmac` node? | **Yes** — DWMAC1000, Synopsys ID 0x37 |
+| Does `REALTEK_PHY=y` actually bind, or does it degrade to genphy? | **Binds.** `DRIVER=RTL8211F Gigabit Ethernet`, `OF_FULLNAME=/soc/ethernet@ff3f0000/mdio/ethernet-phy@0`. This was the plan's headline fear ("gigabit that mostly works") and it does not happen. |
+| Is the PHY interrupt real, or is phylib silently polling? | **Real.** `/proc/interrupts` line 26: `meson-gpio-irqchip 98 Level stmmac-0:00` — exactly the DTS's `interrupt-parent = <&gpio_intc>; interrupts = <98 IRQ_TYPE_LEVEL_LOW>`. |
+| Does the `ethernet0` alias deliver the MAC? | **Yes.** `eth0` address is `00:01:38:2a:bb:5c`, byte-identical to stored `ethaddr`, so U-Boot's `fdt_fixup_ethernet()` found the alias and injected it — even on a hand-driven `booti`. |
+| `phy-mode` | `configuring for phy/rgmii link mode`, matching the DTS, and identical to the 5.4 baseline line. |
+
+**Still not answerable without a cable.** `carrier=0 operstate=down`, and the
+interrupt count is 0 because nothing has ever linked. So the parts of the Phase 4
+gate that need traffic — per-direction iperf3 against the 5.4 baseline, 20 cable
+pulls each incrementing that interrupt count, `ethtool -S` CRC/length errors, and
+above all the **MDIO page 0xd08 reg 17 bit 8 / reg 21 bit 3 TX-vs-RX delay
+comparison** that decides `rgmii` vs `rgmii-rxid` — remain open. Those need a
+cable plus `ethtool`/`iperf3`/a MDIO tool installed, none of which the stock image
+has.
+
+What this does establish is that everything *upstream* of a link is correct: the
+node, the MDIO bus, PHY detection, the right driver, a live interrupt and the MAC
+address. If the delay comparison later says `rgmii-rxid`, it is a one-word DTS
+change on a tree that is otherwise proven.
+
 ### 12. `setexpr` exists on this unit
 
 `button=400` in the stored env was computed by
