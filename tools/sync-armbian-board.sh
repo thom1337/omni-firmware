@@ -26,8 +26,8 @@ ARMBIAN_DIR="${REPO_ROOT}/armbian"
 
 BOARD="avast-omni"
 LINUXFAMILY="meson64"
-BRANCH="oldlts"          # Armbian branch name; part of the kernel config file name
-KERNEL_VERSION="6.12"    # must match AVAST_OMNI_PINNED_KERNEL in the hook
+BRANCH="current"        # Armbian branch name; part of the kernel config file name
+KERNEL_VERSION="6.18"    # must match AVAST_OMNI_PINNED_KERNEL in the hook
 DTS_NAME="meson-axg-apollo.dts"
 
 DRY_RUN="no"

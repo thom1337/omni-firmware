@@ -55,8 +55,8 @@ fix it.
 **State you must already have:**
 
 * `docs/HARDWARE.md` filled in — see [Phase 0](#phase-0--pre-flight). Until
-  `grep -n '<<UNFILLED>>' docs/HARDWARE.md` prints nothing, **you are in Phase
-  0 whatever you think you are doing**.
+  `grep -n '<<UNFILLED>>' docs/HARDWARE.md | grep -v GATE-SELF-REF` prints
+  nothing, **you are in Phase 0 whatever you think you are doing**.
 * Verified backups, and a second copy of them somewhere else.
 * `/data/omni-env-8k.bin` staged **on the device**.
 
@@ -251,7 +251,7 @@ back, and rank 4 silently does not exist.
 
 USB ID `1b8e:c003`, driven with [pyamlboot](https://github.com/superna9999/pyamlboot)
 using the `s400` profile (same SoC family). If
-[`HARDWARE.md` §12](HARDWARE.md#12--usb--is-a-port-physically-routed) says the
+[`HARDWARE.md` §12](HARDWARE.md#12-usb--is-a-port-physically-routed) says the
 port is not routed, this rank does not exist and rank 1 is your floor.
 
 ### The environment is corrupt (nothing boots, U-Boot complains about CRC)
@@ -347,7 +347,7 @@ Finally, transcribe everything into `docs/HARDWARE.md` and commit it.
 
 | Evidence | Where |
 |---|---|
-| `grep -n '<<UNFILLED>>' docs/HARDWARE.md` prints nothing | — |
+| `grep -n '<<UNFILLED>>' docs/HARDWARE.md \| grep -v GATE-SELF-REF` prints nothing | — |
 | P1–P8 all `PASS` (or a written, reviewed waiver) | `HARDWARE.md` §14 |
 | `omni-preflight.sh` exits `0` | its `SUMMARY.txt` |
 | Full eMMC image md5 matches the device's own `md5sum /dev/mmcblk0` | `MD5-VERIFY.txt` |

@@ -42,8 +42,18 @@
 # bump AVAST_OMNI_PINNED_BRANCH if the branch name changes, move
 # board/meson-axg-apollo.dts to the matching patch/kernel/archive/meson64-<X.Y>/dt/
 # via tools/sync-armbian-board.sh --kernel-version, and re-run the Phase 4 gate.
-declare -g AVAST_OMNI_PINNED_KERNEL="6.12"
-declare -g AVAST_OMNI_PINNED_BRANCH="oldlts"
+# Pinned to 6.18 (Armbian "current"), NOT 6.12 ("oldlts"), for two reasons found
+# by building rather than by reading:
+#   1. 6.12 does not build at the pinned armbian SHA. Its published artifact is
+#      not anonymously pullable ("denied: requested access to the resource is
+#      denied"), so the build falls back to source, and that fails inside
+#      Armbian's own patching.py before any patch is applied -- reproduced on the
+#      stock gateway-gz80x board with none of our files involved.
+#   2. 6.12 LTS reaches EOL in Dec 2026; 6.18 runs into late 2027.
+# board/meson-axg-apollo.dts compiles clean against both series, so this is a
+# one-line pin, not a port.
+declare -g AVAST_OMNI_PINNED_KERNEL="6.18"
+declare -g AVAST_OMNI_PINNED_BRANCH="current"
 
 function post_family_config__avast_omni_pin_kernel_major_minor() {
 	declare want="${AVAST_OMNI_PINNED_KERNEL}"

@@ -94,7 +94,7 @@ Then:
 
 ```sh
 cd armbian
-./compile.sh kernel BOARD=avast-omni BRANCH=oldlts   # oldlts == 6.12 for meson-axg today
+./compile.sh kernel BOARD=avast-omni BRANCH=current  # current == 6.18 for meson-axg today
 ```
 
 `BRANCH` names roll forward silently upstream (`oldlts`→6.12, `current`→6.18,

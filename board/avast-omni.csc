@@ -24,8 +24,8 @@
 #  Do not edit the copy inside the armbian/ submodule - it is overwritten.
 #
 #  Build with:
-#    cd armbian && ./compile.sh kernel BOARD=avast-omni BRANCH=oldlts
-#    cd armbian && ./compile.sh dts-check BOARD=avast-omni BRANCH=oldlts
+#    cd armbian && ./compile.sh kernel BOARD=avast-omni BRANCH=current
+#    cd armbian && ./compile.sh dts-check BOARD=avast-omni BRANCH=current
 # ==============================================================================
 
 BOARD_NAME="Avast Omni"
@@ -56,17 +56,17 @@ BOOTCONFIG="none"
 # ------------------------------------------------------------------------------
 # Kernel
 # ------------------------------------------------------------------------------
-# Single target on purpose. meson64_common.inc maps oldlts -> 6.12 today; the
-# post_family_config__avast-omni extension re-asserts KERNEL_MAJOR_MINOR="6.12"
-# so that an armbian/ submodule bump which re-points "oldlts" at a newer series
+# Single target on purpose. meson64_common.inc maps current -> 6.18 today; the
+# post_family_config__avast-omni extension re-asserts KERNEL_MAJOR_MINOR="6.18"
+# so that an armbian/ submodule bump which re-points "current" at a newer series
 # fails loudly instead of silently shipping a different kernel to the field.
-KERNEL_TARGET="oldlts"
-KERNEL_TEST_TARGET="oldlts"
+KERNEL_TARGET="current"
+KERNEL_TEST_TARGET="current"
 
 # Required by ./compile.sh dts-check (lib/functions/compilation/kernel-dts-check.sh:13
 # exits with an error when unset) and by kernel.sh:186 which copies the
 # preprocessed + binary DTB out for development. The .dts lands in the tree via
-# patch/kernel/archive/meson64-6.12/dt/ (dts-directories in 0000.patching_config.yaml).
+# patch/kernel/archive/meson64-6.18/dt/ (dts-directories in 0000.patching_config.yaml).
 # NOTE: this file does not exist until Phase 3; dts-check fails until it does.
 BOOT_FDT_FILE="amlogic/meson-axg-apollo.dtb"
 

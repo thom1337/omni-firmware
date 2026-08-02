@@ -87,8 +87,8 @@ available at every step.
 | [`board/README.md`](board/README.md) | how Armbian picks the board files up, and the deliberate deviations from the upstream reference boards | when touching `board/` |
 
 `docs/HARDWARE.md` is a template until somebody fills it in on real hardware.
-While `grep -n '<<UNFILLED>>' docs/HARDWARE.md` prints anything, the migration
-is not cleared to proceed past Phase 0.
+While `grep -n '<<UNFILLED>>' docs/HARDWARE.md | grep -v GATE-SELF-REF` prints
+anything, the migration is not cleared to proceed past Phase 0.
 
 ### `board/` — what we own, that Armbian consumes
 

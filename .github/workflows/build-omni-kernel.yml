@@ -50,8 +50,8 @@
 #
 #  Local equivalent of this entire file:
 #     bash tools/sync-armbian-board.sh
-#     cd armbian && ./compile.sh kernel    BOARD=avast-omni BRANCH=oldlts
-#     cd armbian && ./compile.sh dts-check BOARD=avast-omni BRANCH=oldlts
+#     cd armbian && ./compile.sh kernel    BOARD=avast-omni BRANCH=current
+#     cd armbian && ./compile.sh dts-check BOARD=avast-omni BRANCH=current
 #     bash tools/check-kconfig-invariants.sh --strict armbian/output/debs/linux-image-*.deb
 #
 #  No secrets are required; GITHUB_TOKEN is not used.
@@ -74,12 +74,12 @@ on:
       armbian_branch:
         description: 'Armbian kernel BRANCH (oldlts=6.12, current=6.18). Anything other than the pinned branch produces an EVALUATION kernel that must not ship.'
         required: false
-        default: 'oldlts'
+        default: 'current'
         type: string
       kernel_version:
         description: 'Kernel series X.Y. Selects patch/kernel/archive/meson64-X.Y/dt/ for the DTS. Must equal the pin in board/post_family_config__avast-omni.sh when building the pinned branch.'
         required: false
-        default: '6.12'
+        default: '6.18'
         type: string
       strict_kconfig:
         description: 'Promote every WARN kernel-config invariant to a failure.'
@@ -110,8 +110,8 @@ jobs:
       OMNI_BOARD: avast-omni
       OMNI_LINUXFAMILY: meson64
       # inputs.* are empty on `push`; these are the shipping defaults.
-      OMNI_BRANCH: ${{ inputs.armbian_branch || 'oldlts' }}
-      OMNI_KERNEL_VERSION: ${{ inputs.kernel_version || '6.12' }}
+      OMNI_BRANCH: ${{ inputs.armbian_branch || 'current' }}
+      OMNI_KERNEL_VERSION: ${{ inputs.kernel_version || '6.18' }}
       # Anything but an explicit `false` means strict.
       OMNI_STRICT_KCONFIG: ${{ inputs.strict_kconfig != false }}
 
@@ -425,7 +425,7 @@ jobs:
       # armbian/output/config/*.config. Those are all savedefconfig output:
       # they omit every symbol that is at its Kconfig default or implied by
       # another symbol. Verified against the pinned submodule — checking the
-      # synced linux-meson64-oldlts.config reports six failures
+      # synced linux-meson64-current.config reports six failures
       # (STMMAC_PLATFORM, DWMAC_MESON8B, NEW_LEDS, NF_NAT, SYN_COOKIES,
       # CGROUPS) that are all present and correct in the real .config. A gate
       # with false failures gets waived, and then it is not a gate.

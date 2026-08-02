@@ -228,15 +228,39 @@ yet added the node), and no explicit `#address-cells` on `reserved-memory`.
 
 ## 2. Summary
 
-| Class | Count | Where |
+Counted over the classified rows in §3–§6. A single row can cover more than one
+identical property (e.g. `max-brightness` on all three LEDs), so these are row
+counts, not property counts.
+
+| Class | Rows | Where |
 |---|---|---|
-| PRESENT | 62 properties across 15 nodes | §3, §4, §5 |
-| DELETED | 6 properties + 2 kernel source files + 2 Makefile hunks | §3.5, §4.1, §6 |
-| MOVED-TO-DTSI | 5 properties | §4.1, §3.3 |
-| NEW | 3 whole nodes + 4 properties | §3.6, §3.7, §4.2, §3.5 |
+| PRESENT | 73 | §3, §4, §5 |
+| NEW | 17 | §3.6 (button), §3.7 (thermal), §4.2 (`&nfc`), §3.5 (`default-state`) |
+| DELETED | 9 | §3.5 (`brightness`, `default-trigger`), §4.1 (`snps,*`), §6 (two kernel source files, the Makefile hunks) |
+| MOVED-TO-DTSI | 7 | §3.3 (`reserved-memory` cells), §4.1 (`rx-`/`tx-fifo-depth`) |
+
+Regenerate these counts after any edit:
+
+```sh
+python3 - <<'PY'
+import re
+from collections import Counter
+c, infence = Counter(), False
+for l in open('docs/dts-port-audit.md'):
+    if l.lstrip().startswith('```'): infence = not infence; continue
+    if infence: continue
+    s = l.strip()
+    if not (s.startswith('|') and s.endswith('|')): continue
+    cells = [x.strip().replace('**','') for x in re.split(r'(?<!\\)\|', s)[1:-1]]
+    hits = [x for x in cells if x in ('PRESENT','DELETED','MOVED-TO-DTSI','NEW')]
+    if hits: c[hits[0]] += 1
+print(c, 'total', sum(c.values()))
+PY
+```
 
 **No property of the old DTS is unaccounted for.** Every line of §1 appears in
-exactly one row below.
+exactly one row below. Three whole nodes are new: `gpio-keys-polled`,
+`thermal-zones` and the `&nfc` disable.
 
 ---
 

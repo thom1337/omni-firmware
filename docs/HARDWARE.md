@@ -2,19 +2,23 @@
 
 > **THIS IS A TEMPLATE. IT IS NOT DATA.**
 >
-> Every field below marked `<<UNFILLED>>` is a value that **nobody currently
+> Every field below marked `<<UNFILLED>>` is a value that **nobody currently <!-- GATE-SELF-REF -->
 > knows**. The migration plan (`docs/ARMBIAN-MIGRATION.md`) treats each one as a
 > gate, not as a nice-to-have. A guessed value here becomes a wrong `mke2fs`
 > feature set, a wrong `mender_ramdisk_name`, or a rollback path that does not
 > exist — none of which fail loudly, and all of which fail on a device in a
 > closet that you cannot reach.
 >
-> **The project is not cleared to proceed past Phase 0 while any
-> `<<UNFILLED>>` remains.** The literal, mechanical gate is:
+> **The project is not cleared to proceed past Phase 0 while any such marker
+> remains.** The literal, mechanical gate is:
 >
 > ```sh
-> grep -n '<<UNFILLED>>' docs/HARDWARE.md   # must print NOTHING
+> grep -n '<<UNFILLED>>' docs/HARDWARE.md | grep -v GATE-SELF-REF   # must print NOTHING  (GATE-SELF-REF)
 > ```
+>
+> (The `grep -v` drops the handful of lines in this document that *talk about*
+> the marker rather than *being* one; they carry an invisible `GATE-SELF-REF`
+> HTML comment for exactly that purpose.)
 >
 > Fields marked `<<DEFERRED:P5>>` are deliberately answered later, in Phase 5,
 > on throwaway DTBs. They do **not** block Phase 1–4. Everything else does.
@@ -721,7 +725,7 @@ transcript, or a pasted command output above.
 
 | Statement | Answer |
 |---|---|
-| `grep -c '<<UNFILLED>>' docs/HARDWARE.md` returns `0` | `<<UNFILLED>>` |
+| The readiness grep at the top of this file prints nothing | `<<UNFILLED>>` |
 | All eight of P1–P8 are `PASS` (or have a written, reviewed waiver) | `<<UNFILLED>>` |
 | Waivers, if any, with the reviewer's name | `<<UNFILLED>>` |
 | Backups verified by md5 against the device (§1) | `<<UNFILLED>>` |
@@ -733,4 +737,4 @@ transcript, or a pasted command output above.
 | **Cleared to start Phase 1** — signed | `<<UNFILLED>>` |
 
 > If you are reading this document to decide whether it is safe to do something
-> and any field above is still `<<UNFILLED>>`, the answer is no.
+> and any field above is still an unfilled marker, the answer is no.
