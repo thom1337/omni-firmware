@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "permissions": {
+    "allow": [
+      "Bash(python3 tools/omni-console.py *)",
+      "Bash(python3 tools/omni-uboot.py *)",
+      "Bash(timeout * python3 tools/omni-console.py *)",
+      "Bash(timeout * python3 tools/omni-uboot.py *)"
+    ]
+  }
+}

@@ -17,3 +17,6 @@ build/*
 # rootfs builder (rootfs/build-rootfs.sh) scratch and inputs
 /rootfs/.work/
 /rootfs/kernel-debs/
+
+# Claude Code local overrides (machine-specific: jumphost address for the Omni serial console)
+.claude/settings.local.json
