@@ -219,6 +219,7 @@ def main():
 
         run(sock, "stty -echo", quiet=0.4, timeout=10)
         t_start = time.monotonic()
+        this_run = 0
         try:
             for i in range(nchunks):
                 if i in done:
@@ -268,7 +269,11 @@ def main():
                 os.replace(tmp, state_path)
 
                 el = time.monotonic() - t_start
-                per = el / max(len(done) - len(done & set(range(0))), 1)
+                # Rate over chunks done IN THIS RUN. Using len(done) would divide
+                # this run's elapsed time by chunks a previous run had already
+                # finished, and a resumed run would report a nonsense ETA.
+                this_run += 1
+                per = el / this_run
                 remaining = nchunks - len(done)
                 print(f"  chunk {i+1}/{nchunks} verified  "
                       f"({100.0*len(done)/nchunks:.1f}%, elapsed {el/3600:.2f} h, "
@@ -277,10 +282,49 @@ def main():
             run(sock, "stty echo", quiet=0.6, timeout=15)
 
         print("\nall chunks verified individually; checking the whole partition", flush=True)
-        got = run(sock,
-                  f"sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null; "
-                  f"head -c {total} {args.target} | sha256sum | cut -d' ' -f1",
-                  quiet=5.0, timeout=3600.0, first_byte=3000.0)
+        # The device goes SILENT for 30-45 s here: 850 MiB off eMMC plus a
+        # coreutils-6.9 generic-C sha256 on a 1.2 GHz A53. drain()'s idle-gap rule
+        # cannot survive that, and a first_byte budget does not rescue it either --
+        # zsh ECHOES the command back within ~50 ms, so `buf` is immediately
+        # non-empty and the `quiet` rule applies, handing back the echoed command
+        # while the device is still working. That would report a false MISMATCH
+        # after eight hours of correct work, on the ONLY media-level check in the
+        # tool. So wait passively for an explicit end marker instead.
+        #
+        # The marker is SPLIT in the source on purpose: the echoed command line
+        # contains EN''D_<nonce>, and only the device's real output reassembles
+        # END_<nonce>. Without the split, the first match is the shell echoing us.
+        nonce = "%08x" % (int(time.time()) & 0xffffffff)
+        end = ("END_" + nonce).encode()
+        sock.sendall((f"sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null; "
+                      f"head -c {total} {args.target} | sha256sum | cut -d' ' -f1; "
+                      f"echo 'EN''D_{nonce}'\n").encode())
+        seen = b""
+        w0 = last_report = time.monotonic()
+        sock.settimeout(1.0)
+        while time.monotonic() - w0 < 1800.0:
+            try:
+                c = sock.recv(4096)
+                if not c:
+                    break
+                seen += c
+            except socket.timeout:
+                pass
+            except OSError:
+                break
+            if end in seen:
+                break
+            now = time.monotonic()
+            if now - last_report > 30.0:
+                print(f"    …device still hashing, {(now-w0)/60:.1f} min elapsed (cap 30 min)",
+                      flush=True)
+                last_report = now
+        if end not in seen:
+            sys.stderr.write("\nwhole-image check did not finish within 30 min; verdict UNKNOWN.\n"
+                             "  All chunks were individually verified, so the data is probably fine.\n"
+                             "  Re-run with --resume to retry just this check.\n")
+            return 6
+        got = seen.decode("utf-8", "replace").split("END_" + nonce)[0]
         if whole in got:
             print(f"WHOLE-IMAGE SHA256 MATCHES on the device: {whole}", flush=True)
             return 0
