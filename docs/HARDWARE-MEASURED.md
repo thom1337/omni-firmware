@@ -333,7 +333,65 @@ batched write → re-lock → read-back assert). Worth promoting to a first-clas
 `omni-set-slot.sh --force`, because the moment you need it is the moment you are
 least in the mood to compose it by hand.
 
-### 11. `setexpr` exists on this unit
+### 11. Phase 4 trial boot — mainline 6.18 runs this hardware
+
+Booted `6.18.41-current-meson64` with our DTS entirely from the `=>` prompt, so
+nothing persistent was written and the plain reboot afterwards came straight back
+to 5.4.62. Kernel and DTB were pushed to `/data` (p3) over serial with
+`tools/omni-push.py` and SHA-256 verified on the device; the rootfs was slot A's
+own Yocto userland and its existing initramfs, i.e. one variable changed.
+
+```
+=> ext4load mmc 0:3 ${fdt_addr_r}     /k618/meson-axg-apollo.dtb
+=> ext4load mmc 0:3 ${kernel_addr_r}  /k618/Image
+=> ext4load mmc 0:1 ${ramdisk_addr_r} /boot/apollo-initramfs-image-meson-apollo.cpio.gz
+=> setenv bootargs root=/dev/mmcblk0p1 rootwait rw console=ttyAML0 panic=10
+=> booti ${kernel_addr_r} ${ramdisk_addr_r}:${filesize} ${fdt_addr_r}
+```
+
+**What passed**
+
+| Item | Evidence |
+|---|---|
+| DTS is live | `Machine model: Avast Omni (Apollo)` |
+| eMMC | `mmc0: new HS200 MMC card`; ios reports **199,999,805 Hz, 8-bit, timing spec 9 (HS200)** — an exact match for `max-frequency = <200000000>` and for the 5.4 baseline |
+| Partitions | `mmcblk0: p1 p2 p3 p4 < p5 p6 p7 >` |
+| Root + overlay | p1 and p5 mounted, `overlayfs: "xino" feature enabled`, p3 mounted at /data |
+| Userspace | reached `avast-omni login:` and a working root shell |
+| **LED ABI** | `/sys/class/leds/` contains exactly `apollo:power`, `apollo:app1`, `apollo:app2` — the paths the initramfs writes, byte-identical |
+| **gpio-keys-polled** | `input: gpio-keys-polled as /devices/platform/gpio-keys-polled/input/input0`. This vindicates the port's non-obvious choice: plain `gpio-keys` cannot probe on meson-axg and would have failed here. |
+| `&nfc` disable | no `meson_nand` anywhere in dmesg; nothing contended for the eMMC pads |
+| Serial | `ttyAML0 ... is a meson_uart` |
+| USB | `dwc3-meson-g12a: USB2 ports: 1` — a USB2 controller exists and initialises (physical routing still unknown) |
+
+**What did not pass**
+
+1. **The NIC never probed — this is the blocking one.** dmesg shows no stmmac or
+   dwmac driver at all, only `meson_ee_pwrc: sync_state() pending due to
+   ff3f0000.ethernet`, and `/sys/class/net` contains just `lo`. Cause:
+   Armbian ships `CONFIG_DWMAC_MESON=m` and this trial had no `/lib/modules` on
+   the device. So **plan risk #3 — the RTL8211F RGMII TX/RX delay comparison —
+   remains completely untested.** Fixed at the source rather than worked around:
+   the config delta now pins `CONFIG_DWMAC_MESON=y` and `CONFIG_STMMAC_ETH=y`,
+   for the same reason `REALTEK_PHY` is `=y`. On a headless box the NIC is the
+   only remote access, so making it depend on a correctly-mounted rootfs and a
+   matching modules tree buys nothing. `check-kconfig-invariants.sh` now enforces
+   both as STRICT `=y` and correctly fails the current build (43/44).
+
+2. **No thermal zones.** `/sys/class/thermal/thermal_zone*` does not exist. The
+   cause is specific and worth knowing: `scpi_protocol scpi: SCP Protocol legacy
+   pre-1.0 firmware`. Our `thermal-zones` node was lifted from JetHub and hangs
+   off `thermal-sensors = <&scpi_sensors 0>`, and this unit's legacy SCP firmware
+   does not export that sensor. It failed exactly as gracefully as predicted — the
+   zone simply did not register and the boot was unaffected — but the Omni still
+   has no thermal management. Needs a different sensor or dropping the node;
+   a Phase 5 decision, not a blocker.
+
+Neither failure is a DTS defect. The device tree itself is validated on real
+silicon for eMMC, storage, console, LEDs, the reset button and the NAND
+conflict; what is left is one kernel-config line and one thermal-sensor question.
+
+### 12. `setexpr` exists on this unit
 
 `button=400` in the stored env was computed by
 `setexpr button *0xff800028 & 0x400`, answering the plan's open question: this
