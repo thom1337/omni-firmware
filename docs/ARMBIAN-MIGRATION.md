@@ -11,7 +11,9 @@ This is tractable because none of the hard parts are actually hard. Mainline Lin
 
 ## Pre-flight: do these before writing anything
 
-Serial console on ttyAML0 (3.3 V USB-TTL, case open) is a **hard prerequisite**, not a convenience. The stored env on a field unit likely holds `bootdelay=-2` — the removed patch (`0099`, commit `7420aa1`) set `CONFIG_BOOTDELAY=-2` as the compiled default, and `mender_setup`'s first-boot `env default -a; saveenv` persisted it — and `abortboot()` in U-Boot v2018.09 only prompts when `bootdelay >= 0` (verified, `common/autoboot.c:262`), so removing the boot-delay patch from the repo changed nothing on the device.
+Serial console on ttyAML0 (3.3 V USB-TTL, case open) is a **hard prerequisite**, not a convenience.
+
+> **Measured 2026-08-02 — this assumption was wrong, in our favour.** The plan assumed a field unit holds `bootdelay=-2`, making the `=>` prompt unreachable. The unit measured holds **`bootdelay=2`**. `abortboot()` in U-Boot v2018.09 prompts whenever `bootdelay >= 0` (`common/autoboot.c:262`), so the `=>` prompt — rank 1 of the recovery ladder, and the only rung that needs nothing else to be working — **is available today**. Phase 4's "boot entirely from the `=>` prompt" is directly executable, and the whole migration is safer than the plan assumed. Confirm per unit with `fw_printenv bootdelay` before relying on it. Full record: `docs/HARDWARE-MEASURED.md`.
 
 **Order matters: back up before the first env write.** The env is a single non-redundant 8 KB copy (`repo/meta-apollo/recipes-bsp/u-boot-apollo/files/0036-mender-apollo-Do-not-set-CONFIG_ENV_OFFSET_REDUND.patch`, `.../fw_env.config`).
 
@@ -49,7 +51,7 @@ ssh root@omni 'echo 0 > /sys/block/mmcblk0boot0/force_ro; fw_setenv bootdelay 3;
 | # | Check | Fail action |
 |---|---|---|
 | P1 | `fw_printenv force_run_mfc force_run_eol` both `0` | Compiled defaults are `1`; `APOLLO_CHECK_MFC` runs *before* slot selection (`.../0055-apollo-Run-MFC-on-first-boot.patch`) and forces p7. Fix first. |
-| P2 | `fw_printenv bootargs` → **not defined** | `root=` last-occurrence wins; a stale stored `bootargs` silently boots slot B's kernel against slot A's rootfs. |
+| P2 | **RESTATED:** `fw_printenv bootargs` contains **no `root=`** (it may legitimately be defined) | `root=` last-occurrence wins; a stale stored `root=` silently boots the selected slot's kernel against the *other* slot's rootfs. **Measured:** a healthy unit has `bootargs=rootwait rw console=ttyAML0` — defined, but with no `root=`, which is patch `0039`'s fixed common cmdline. `MENDER_BOOTARGS` prepends `root=${mender_kernel_root}` each boot, and `/proc/cmdline` confirms the result. The original "must not be defined" wording fails a healthy unit. |
 | P3 | `fw_printenv ethaddr` non-empty; MAC stable over 3 reboots | The `check_env` self-heal in `.../0025-configs-apollo-add-env-checking-and-reset.patch` is **dead code** — `0031` replaces `bootcmd` with `CONFIG_MENDER_BOOTCOMMAND`, so `check_env` is never invoked. Lose `ethaddr` and `CONFIG_NET_RANDOM_ETHADDR` gives a new MAC every boot, forever. |
 | P4 | `fw_printenv mender_kernel_name mender_dtb_name mender_ramdisk_name` | **Capture verbatim. Never type them from the patches.** Compiled values are `Image` / `meson-axg-apollo.dtb` / `apollo-initramfs-image-meson-apollo.cpio.gz` (`.../0051-apollo-Fix-the-initramfs-name.patch:22`), but a field binary may predate `0050`/`0051`. |
 | P5 | `md.w 0xff80023c 1` at `=>` after: cold power-on, `reset`, Linux `reboot`, forced watchdog bite, **cold power cut** | `check_watchdog` (`.../0044-recovery-apollo-Add-support-for-recovery-reset.patch`) reads `0xd000` here and forces `mender_boot_part=7` **ahead of A/B**. If a plain reboot or a power cut latches it, every reboot goes to recovery and the whole risk model changes. `RuntimeWatchdogSec=10` is live today (`repo/meta-apollo/recipes-core/systemd-apollo/files/system.conf:27`, `repo/meta-apollo/recipes-kernel/linux/files/defconfig:237-238`). |
@@ -65,7 +67,7 @@ ssh root@omni 'echo 0 > /sys/block/mmcblk0boot0/force_ro; fw_setenv bootdelay 3;
 
 | # | Goal | Artifact | Evidence that closes it | Days | Rollback |
 |---|---|---|---|---|---|
-| **0** | Pre-flight above | `docs/HARDWARE.md`, verified backups | P1–P8 all pass | 2.5 | n/a |
+| **0** | Pre-flight above | `docs/HARDWARE.md`, verified backups | 🟡 **PARTIAL 2026-08-02** — `docs/HARDWARE-MEASURED.md` written from a live unit. **P1 pass, P4 captured, P8 answered** (slot B is formatted but empty — never booted, safe to overwrite), **P6 partial** (p7 populated), **P2 restated** (see above), **P3 static half pass**. The env is backed up and CRC-verified. **P5 and P7 still need reboots**; the full-eMMC backup is not achievable over serial (~4 days at 115200) and needs a network cable. | 2.5 | n/a |
 | **1** | **First-ever** A/B execution | `tools/omni-{arm,commit,rollback}.sh` | Arm to the *current* slot (`bootcount 0`, `upgrade_available 1`, pointer unchanged), reboot → `bootcount=1`; reboot again without committing → serial shows `Warning: Bootlimit (1) exceeded. Using altbootcmd.` and the pointer flipped. Also run the T9 case: truncate `/boot/Image` on the inactive slot and confirm the load failure produces a `=>` prompt, not a hang. | 1.5 | Restore env from `omni-boot0.img` |
 | **2** | Armbian kernel factory | `armbian/` submodule pinned to a SHA; `board/` synced in via one-way rsync | ✅ **DONE 2026-08-02.** `./compile.sh kernel BOARD=gateway-gz80x BRANCH=current` produced all four `-meson64` debs (image/headers/dtb/libc-dev) via Armbian's Docker mode. See the branch note below — `BRANCH=oldlts` (6.12) does **not** build. | 1 | n/a |
 | **3** | Author the DTS | `meson-axg-apollo.dts`, `avast-omni.csc`, kernel config delta, `docs/dts-port-audit.md` | ✅ **DONE 2026-08-02.** DTS compiles clean (0 attributable dtc warnings) against both v6.12 and v6.18 headers. A full `./compile.sh kernel BOARD=avast-omni BRANCH=current` succeeded: `BOOTCONFIG=none` kept U-Boot untouched, and the `linux-dtb` deb contains `amlogic/meson-axg-apollo.dtb` — the exact `mender_dtb_name`. `tools/check-kconfig-invariants.sh` against the *built* kernel: **44 passed, 0 failed** (same checker reports 15 failures against stock Armbian, so the delta is doing real work). Still open until hardware: the `dtc -I dtb -O dts` old-vs-new diff, which needs the running unit's DTB. | 3 | n/a |
@@ -284,7 +286,7 @@ Batching covers only **one of three** env-write windows: `CONFIG_BOOTCOUNT_ENV=y
 | eMMC wear (`pre_eol_info`, `life_time_est`) | `ext_csd` — a worn card will look like a DTS bug |
 | Does `bootcount` actually persist and `altbootcmd` actually exist in the *stored* env? | Phase 1 |
 | Does U-Boot 2018.09 have `setexpr` on this unit? | `setexpr b *0xff800028 & 0x400` at `=>`; absent means pre-`0041` and the reset button does nothing |
-| Is `/data` (p3) large enough for Docker images? | `df -k /data`; if not, the on-device Docker plan needs rethinking before Phase 7 |
+| ~~Is `/data` (p3) large enough for Docker images?~~ | ❌ **ANSWERED — NO.** Measured 150 MiB total, **130 MiB free**. That does not hold one Docker image, let alone a set. `rootfs/overlay/etc/docker/daemon.json` points `data-root` at `/data/docker` and **cannot be used as written**. This needs a decision before Phase 7 ships: shrink p5/p6 (650 MiB each) and grow p3, drop on-device Docker, or accept images on the A/B-protected rootfs. |
 
 ---
 
