@@ -113,7 +113,7 @@ sequence uses, so that sequence can be pasted as written.
 | **P2** | `bootargs` not defined | ⚠️ **RESTATE** — it *is* defined, but carries **no `root=`**, so the hazard is absent. See below. |
 | **P3** | `ethaddr` non-empty, MAC stable | ✅ **PASS (static half)** — set, and matches the live MAC. ⏳ stability across 3 reboots untested. |
 | **P4** | Capture the three `mender_*_name` values verbatim | ✅ **CAPTURED** — they match the compiled post-`0050`/`0051` defaults, so this is not an old binary. |
-| **P5** | `md.w 0xff80023c 1` across six reset types | ⏳ **NOT DONE** — needs repeated reboots and the `=>` prompt. |
+| **P5** | `md.w 0xff80023c 1` across six reset types | 🟡 **TWO OF SIX DONE, both clean** — see below. Linux `reboot` → `0x0000` (twice), U-Boot `reset` → `0x0000`. Neither latches the recovery register. The remaining four need physical access or a deliberate watchdog bite. |
 | **P6** | Reset-button boot reaches a shell on p7 | ✅ **p7 is populated** (see below). ⏳ the button-boot itself needs physical access. |
 | **P7** | Env restore drill | ⏳ **NOT DONE** — but its prerequisite, a verified env backup, now exists. |
 | **P8** | p2 shows a valid rootfs | ✅ **ANSWERED** — p2 is a *formatted but empty* ext4: `lost+found` and nothing else. Slot B has never been booted, exactly as predicted. **Safe to overwrite.** |
@@ -244,7 +244,46 @@ But **p1 — the filesystem U-Boot 2018.09 boots today — has `64bit` and
 
 Keep the conservative flags; drop the "because p1 has it" reasoning.
 
-### 9. `setexpr` exists on this unit
+### 9. P5 partial result — a plain reboot does **not** trap the box in recovery
+
+The plan's risk #1 is that `check_watchdog` (`itest.w *0xff80023c -eq 0xd000`)
+runs *ahead* of A/B slot selection, and `altbootcmd` ends in `run bootcmd` which
+re-evaluates it — so a latched register traps every boot in recovery p7 and
+bootcount rollback provably cannot escape. The plan's specific fear:
+
+> If a plain reboot or a power cut latches it, every reboot goes to recovery and
+> the whole risk model changes.
+
+Measured at the `=>` prompt with `tools/omni-uboot.py`:
+
+| Reset type | `0xff80023c` | Diverts to p7? |
+|---|---|---|
+| Linux `reboot` (run 1) | `0x0000` | no |
+| Linux `reboot` (run 2) | `0x0000` | no |
+| U-Boot `reset` | `0x0000` | no |
+
+**The two most common reset paths are clean and reproducible.** That removes the
+worst version of risk #1: routine reboots — which is what Phase 1's arm/rollback
+drill does over and over — do not latch the register.
+
+Still unmeasured, and each needs something I could not do remotely:
+
+| Reset type | Needs |
+|---|---|
+| Cold power-on | mains removed ≥10 s, physical |
+| Cold power **cut** (the plan's specific worry) | physical |
+| Forced watchdog bite | deliberately hanging the box; if it *does* latch, clearing it needs a `mw.w` write at the prompt, which `omni-uboot.py` refuses without `--allow-writes` |
+| Reset button | physical |
+
+The watchdog case is the one that matters most, because it is the case the
+register exists *for*. Do that one with someone at the device.
+
+Incidental confirmations from the same transcripts: `U-Boot 2018.09 (Sep 10 2018
+- 21:46:42 +0000) apollo`, `DRAM: 512 MiB`, `Loading Environment from MMC... OK`,
+and a resumed `boot` loads 27,778 / 10,381,320 / 11,356,329 bytes — byte-exact
+matches for the dtb, kernel and initramfs sizes in `/boot`.
+
+### 10. `setexpr` exists on this unit
 
 `button=400` in the stored env was computed by
 `setexpr button *0xff800028 & 0x400`, answering the plan's open question: this

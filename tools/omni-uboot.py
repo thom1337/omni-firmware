@@ -36,7 +36,15 @@ Usage
   OMNI_CONSOLE_HOST=<ip> tools/omni-uboot.py run "md.w 0xff80023c 1" "bdinfo"
       catch the prompt (triggering a reboot unless --no-reboot) and run commands
 
-  OMNI_CONSOLE_HOST=<ip> tools/omni-uboot.py run --no-reboot "printenv bootdelay"
+  OMNI_CONSOLE_HOST=<ip> tools/omni-uboot.py run "printenv bootdelay" --no-reboot
+
+ARGUMENT ORDER: the commands are a positional list, so they must come BEFORE the
+flags -- `run "md.w 0xff80023c 1" --no-login`, NOT `run --no-login "md.w ..."`.
+argparse otherwise folds the command into the preceding option and exits 2.
+
+STATE: `run`/`p5` resume the boot with `boot` unless --no-resume is given, so a
+follow-up invocation with --no-reboot will NOT find a prompt -- the box is back
+in Linux by then. Chain with --no-resume when you want to stay at "=>".
       assume the box is ALREADY sitting at the prompt
 
 Options
@@ -56,6 +64,8 @@ import time
 HOST = os.environ.get("OMNI_CONSOLE_HOST", "127.0.0.1")
 PORT = int(os.environ.get("OMNI_CONSOLE_PORT", "4445"))
 PROMPT = b"=>"
+# CSI / OSC / charset-select escapes emitted by zsh's line editor on the device.
+ANSI = re.compile(rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][A-Za-z0-9]|\x1b[@-Z\\-_]")
 
 # Anything that can persist state, rewrite storage, or brick the unit.
 # saveenv is the headline, but mmc/nand/sf writes and env default are equally final.
@@ -82,6 +92,47 @@ def rd(sock, buf):
     except socket.timeout:
         pass
     return buf
+
+
+def ensure_logged_in(sock, user, password, timeout=75.0):
+    """Get to a Linux shell before the reset trigger is sent.
+
+    Without this the trigger is typed at `avast-omni login:` as a USERNAME, the
+    getty then asks for a password, and login times out 60 s later having done
+    nothing at all -- the box never reboots and the "=>" window never opens.
+    That failure is silent unless you read the transcript, so it is handled here
+    rather than left to the caller.
+    """
+    buf = b""
+    sock.sendall(b"\n")
+    t0 = time.monotonic()
+    state = "probe"
+    while time.monotonic() - t0 < timeout:
+        buf = rd(sock, buf)
+        tail = buf[-300:]
+        if state == "probe" and b"login:" in tail:
+            print("\n--- login prompt: authenticating ---", flush=True)
+            sock.sendall(user.encode() + b"\n")
+            state = "sent-user"
+            time.sleep(1.5)
+            continue
+        if state == "sent-user" and b"assword" in tail:
+            sock.sendall(password.encode() + b"\n")
+            state = "sent-pass"
+            time.sleep(2.5)
+            continue
+        # A shell prompt ends in '#' (root) or '$' -- but ONLY after the terminal
+        # escapes are removed. The stock image runs zsh with its line editor on,
+        # so the prompt actually arrives as e.g.
+        #     ESC[Javast-omni# ESC[K ESC[?2004h
+        # and a naive last-byte check sees 'h' from the bracketed-paste enable.
+        clean = ANSI.sub(b"", tail).rstrip()
+        if clean[-1:] in (b"#", b"$") and b"login:" not in clean[-40:]:
+            return True
+        if state == "probe":
+            sock.sendall(b"\n")
+        time.sleep(0.5)
+    return False
 
 
 def catch_prompt(sock, trigger, timeout):
@@ -129,6 +180,9 @@ def main():
     ap.add_argument("--no-reboot", action="store_true")
     ap.add_argument("--no-resume", action="store_true")
     ap.add_argument("--allow-writes", action="store_true")
+    ap.add_argument("--login-user", default="root")
+    ap.add_argument("--login-pass", default="", help="or set OMNI_LOGIN_PASS; never hardcode it here")
+    ap.add_argument("--no-login", action="store_true", help="console is already at a shell")
     ap.add_argument("--timeout", type=float, default=120.0)
     ap.add_argument("--host", default=HOST)
     ap.add_argument("--port", type=int, default=PORT)
@@ -153,6 +207,18 @@ def main():
     trigger = "" if args.no_reboot else args.trigger
     with socket.create_connection((args.host, args.port), timeout=10) as sock:
         sock.settimeout(0.2)
+        if trigger and not args.no_login:
+            password = args.login_pass or os.environ.get("OMNI_LOGIN_PASS", "")
+            if not password:
+                sys.stderr.write(
+                    "no login password: pass --login-pass or set OMNI_LOGIN_PASS.\n"
+                    "  The reset trigger has to be typed at a SHELL. Typed at the\n"
+                    "  login prompt it becomes a username and the box never reboots.\n"
+                    "  Use --no-login only if the console is already at a shell.\n")
+                return 4
+            if not ensure_logged_in(sock, args.login_user, password):
+                print("\n--- could not reach a shell prompt ---", flush=True)
+                return 5
         ok, _ = catch_prompt(sock, trigger, args.timeout)
         if not ok:
             print(f"\n--- NO PROMPT within {args.timeout:.0f}s ---", flush=True)
