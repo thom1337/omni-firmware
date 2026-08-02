@@ -67,9 +67,6 @@ SRC_URI = "git://git.denx.de/u-boot.git \
            file://fw_env.config \
 "
 
-# we will keep old initial image support for multiple env.
-SRC_URI += '${@bb.utils.contains_any("IMAGE_FEATURES", 'debug-tweaks', "", " file://0099-dissable-boot-dalay-and-abort.patch ",d)}'
-
 SRCREV = "f88b6facb87dc4a52f1630eb9d858c0f54c6628e"
 
 S = "${WORKDIR}/git"
