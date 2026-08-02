@@ -40,7 +40,7 @@
 # rootfs/overlay/README.md for what may and may not live on it.
 #
 # nofail + a short device timeout is load-bearing: a corrupt or missing p3 must
-# degrade the box (no Docker, no persistent host keys), never stop it booting.
+# degrade the box (no persistent SSH host keys), never stop it booting.
 # The bootable minimum lives in the image, so a failed /data is survivable; a
 # boot that blocks 90 s on a dead mount and then drops to emergency.target is
 # not, because emergency.target on a headless box is indistinguishable from a

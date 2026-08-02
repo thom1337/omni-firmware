@@ -10,8 +10,8 @@
 # bash, gzip, tar, sed, grep, findutils, login, passwd, hostname, netbase, ifupdown? (no,
 # ifupdown is Priority:important on Debian but is explicitly excluded below — see NOT-INSTALLED).
 #
-# Size budget matters: the slot is ~1 GiB (see --blocks). Adding a package here costs
-# space in BOTH slots.
+# Size budget matters: a slot is 850 MiB (891,289,600 bytes, measured -- see
+# docs/HARDWARE-MEASURED.md). Adding a package here costs space in BOTH slots.
 
 # ---------------------------------------------------------------------------
 # init / PID 1
@@ -21,8 +21,7 @@
 systemd-sysv
 # udev: DT-based interface naming (the end0-vs-eth0 problem in the plan), devtmpfs rules.
 udev
-# D-Bus: systemctl/networkctl/resolvectl over the bus, and the systemd cgroup driver
-# path used by dockerd.
+# D-Bus: systemctl/networkctl/resolvectl over the bus.
 dbus
 
 # ---------------------------------------------------------------------------
@@ -71,9 +70,10 @@ systemd-timesyncd
 # ip / tc / bridge. tc matters because the Yocto kernel-config patch 0009 stripped the
 # packet schedulers and the plan puts them back.
 iproute2
-# The firewall engine. On trixie `iptables` is the nft backend (iptables-nft), so Docker's
-# iptables rules and our nft rules share one engine — this is the whole point of the
-# nftables migration in the plan.
+# The firewall engine. On trixie `iptables` is the nft backend (iptables-nft), so anything
+# that still emits iptables syntax and our native nft rules share one engine — that is the
+# point of the nftables migration. iptables is kept for that compatibility surface even
+# though nothing in the image requires it today.
 nftables
 iptables
 # WireGuard userland; the module comes from Armbian's stock meson64 config (WIREGUARD=m).
@@ -117,36 +117,43 @@ util-linux
 mmc-utils
 
 # ---------------------------------------------------------------------------
-# Containers
+# Containers -- DELIBERATELY NONE
 # ---------------------------------------------------------------------------
-# DECISION: docker.io from trixie (Debian's own Docker packaging), NOT docker-ce from
-# download.docker.com.
+# There is no docker.io, no containerd and no runc in this image, and that is a
+# decision made against the device rather than a preference.
 #
-# Rationale:
-#   * The current Yocto image installs docker-ce (meta-virtualization), so this is a change.
-#     It is a deliberate one.
-#   * docker.io is in-distro: no third-party apt source, no third-party signing key baked
-#     into an image that lives in a closet for years, and it tracks trixie's security
-#     support instead of an upstream channel that can change its arm64 policy.
-#   * trixie's docker.io is cgroup v2 native and works with native.cgroupdriver=systemd,
-#     which is the entire reason the plan drops the cgroup v1 tmpfs hack from fstab.
-#   * It pulls containerd, runc and the CLI as dependencies.
+# Measured on the unit 2026-08-02 (docs/HARDWARE-MEASURED.md):
 #
-# data-root is NOT set here — the overlay ships /etc/docker/daemon.json with
-#   { "data-root": "/data/docker", "exec-opts": ["native.cgroupdriver=systemd"] }
-# and containerd's config sets root = "/data/containerd", because /data (p3) is the only
-# partition that is not per-slot. Anything Docker writes under /var/lib would land in the
-# per-slot overlay upper (p5/p6) and silently revert on an A/B flip.
+#   * docker.service is INACTIVE and the image database holds ZERO images.
+#     /var/lib/docker contains only the empty skeleton dockerd creates on its
+#     first start. Nothing has ever been run.
+#   * Docker cannot use the overlay2 storage driver here at all. Its data would
+#     sit on the root overlayfs, and overlayfs cannot be stacked as the upperdir
+#     of another overlayfs. The kernel says so out loud on every start attempt:
+#         overlayfs: filesystem on '/var/lib/docker/check-overlayfs-support*/upper'
+#         not supported as upperdir
+#     The only fallback is the vfs driver, which stores every layer as a full
+#     physical copy with no sharing -- on a 4 GB eMMC.
+#   * /data (p3), the one partition that is not per-slot and therefore the only
+#     sane data-root, is 150 MiB total with 130 MiB free. That does not hold one
+#     image, never mind a set.
 #
-# Open question from the plan: `df -k /data` must show enough room for the image set before
-# this is committed to. If /data turns out to be small, rebuild with
-#   --exclude docker.io --exclude containerd
-# and revisit.
+# So the packages were installed, never used, and could not have worked well if
+# they had been. Dropping them removes ~400 MB of image, deletes the /data
+# capacity problem outright, and simplifies the cgroup v2 migration (which is
+# still required, but by systemd >= 256, not by Docker's cgroup driver).
 #
-# If BuildKit/compose parity with the current firmware is later required, switch to docker-ce
-# by adding the upstream repo in a customize-hook — that is the one decision in this file
-# worth revisiting, and it is reversible.
-docker.io
+# TO PUT IT BACK you need three things, in this order, and the first is not
+# optional: capacity, then a storage driver, then the packages.
+#   1. Repartition. p5/p6 are 650 MiB each and hold 2.0 MB of actual data; that
+#      is where the space is. This rewrites the partition table on a device whose
+#      p7 holds a factory image this repo cannot rebuild, so it belongs behind a
+#      full backup.
+#   2. Give Docker a data-root on a REAL filesystem, not on the overlay -- e.g.
+#      /data on the enlarged p3 -- so overlay2 works.
+#   3. Add `docker.io` back here plus /etc/docker/daemon.json with
+#      { "data-root": ..., "exec-opts": ["native.cgroupdriver=systemd"] }
+#      and containerd's root= pointed alongside it. Both files are in git history.
 
 # ---------------------------------------------------------------------------
 # Phase 4 gate + on-device debugging

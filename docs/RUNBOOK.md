@@ -480,7 +480,7 @@ touches the device.
 
 ### Preconditions
 
-* Docker, ~40 GB free, a decent network.
+* Docker **on the build host** (the rootfs builder runs in a container), ~40 GB free, a decent network. The Omni image itself ships no container runtime.
 * `armbian/` submodule initialised and **pinned to a SHA**.
 
 ### Commands
@@ -882,7 +882,8 @@ $ scp rootfs/out/omni-slot.ext4.gz root@omni:/data/
 ```
 
 `omni-flash.sh` does, in this order, refusing at every precondition:
-quiesce (watchdog **off**, asserted; docker/containerd/syslog-ng stopped) →
+quiesce (watchdog **off**, asserted; docker/containerd/syslog-ng stopped —
+whichever of them exist; a Debian slot has none) →
 `mkfs.ext4` on the target's overlay upper → `dd` the image → sha256 + `e2fsck
 -fn` → **only then** the single batched environment write via `omni-arm.sh`.
 A failure anywhere before that last step leaves `mender_boot_part` untouched.

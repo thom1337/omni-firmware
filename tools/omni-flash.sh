@@ -66,7 +66,12 @@ OPTIONS
                       only - no e2fsck - which is why this escape hatch exists.
   --stop-service U    also stop unit U during the write (repeatable).  The
                       defaults are docker.socket, docker.service,
-                      containerd.service and syslog-ng.service.
+                      containerd.service and syslog-ng.service.  The Debian
+                      image no longer ships Docker (see rootfs/packages.list),
+                      but this script runs from whichever slot is CURRENTLY
+                      booted -- during migration that is the Yocto slot, which
+                      does have it -- so the units stay in the list.  Anything
+                      not installed or not running is skipped, not an error.
   --no-arm            write and verify, then stop.  Does not touch the
                       environment at all.  Use this for a Phase 4 style trial
                       boot driven entirely from the "=>" prompt.
@@ -91,7 +96,9 @@ WHAT IT STOPS AND RESTORES
   RuntimeWatchdogSec=0, runs `systemctl daemon-reexec`, and ASSERTS that
   RuntimeWatchdogUSec really became 0 before touching anything.  It then stops
   docker.socket, docker.service, containerd.service and syslog-ng.service -
-  only those that exist and are actually running - and tunes vm.dirty_bytes,
+  only those that exist and are actually running, so on a Debian slot (which
+  ships none of the container units) this reduces to syslog-ng or nothing -
+  and tunes vm.dirty_bytes,
   vm.dirty_background_bytes and kernel.printk.
 
   An EXIT trap restores ALL of it: the sysctls (including the dirty_ratio
@@ -132,6 +139,10 @@ SKIP_FSCK=0
 DO_ARM=1
 DO_REBOOT=1
 
+# Kept deliberately even though the Debian image ships no container runtime: this
+# script runs on the slot that is booted NOW, and for the whole migration that is
+# the legacy Yocto slot, where docker/containerd are installed. Units that are
+# absent or inactive are skipped.
 DEFAULT_QUIESCE_UNITS="docker.socket docker.service containerd.service syslog-ng.service"
 EXTRA_QUIESCE_UNITS=""
 

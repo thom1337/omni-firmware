@@ -477,8 +477,6 @@ declare -a ENABLE_UNITS=(
 	ssh.service
 	"serial-getty@${CONSOLE}.service"
 	'?data.mount'
-	'?docker.service'
-	'?containerd.service'
 )
 if [ -n "$OVERLAY_DIR" ]; then
 	# Anything the overlay ships called omni-* gets enabled. A unit with no [Install]

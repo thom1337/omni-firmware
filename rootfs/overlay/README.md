@@ -74,8 +74,6 @@ just says `overlay`).
 
 | Item | Mechanism | File in this tree |
 |---|---|---|
-| Docker images/containers | `"data-root": "/data/docker"` | `etc/docker/daemon.json` |
-| containerd content store | `root = "/data/containerd"` | `etc/containerd/config.toml` |
 | sshd host keys | `HostKey /data/ssh/…` (with `/etc/ssh` fallback) | `etc/ssh/sshd_config.d/10-omni.conf`, `usr/lib/omni/omni-ssh-hostkeys` |
 | SSH authorized keys | second `AuthorizedKeysFile` entry | `etc/ssh/sshd_config.d/10-omni.conf` |
 | directory skeleton + modes | tmpfiles | `etc/tmpfiles.d/omni-data.conf` |
@@ -157,8 +155,6 @@ is unmounted or corrupt, the box must still come up with an address; otherwise a
 | `etc/systemd/system/serial-getty@ttyAML0.service.d/autologin.conf` | `--autologin root`. Preserves today's passwordless serial console. |
 | `etc/ssh/sshd_config.d/10-omni.conf` | keys only, `/data` host keys with `/etc` fallback. |
 | `etc/tmpfiles.d/omni-data.conf` | `/data` directory skeleton and modes. |
-| `etc/docker/daemon.json` | `/data/docker`, `native.cgroupdriver=systemd`, 4 MB × 3 log rotation. |
-| `etc/containerd/config.toml` | `root = "/data/containerd"`. |
 
 ### A/B commit and rollback
 

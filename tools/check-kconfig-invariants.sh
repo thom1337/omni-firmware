@@ -76,20 +76,20 @@ CONFIG_NEW_LEDS|y|fail|LED class core; leds-pwm is useless without it.
 CONFIG_LEDS_CLASS|y|fail|LED class core; provides the /sys/class/leds/* paths the initramfs writes.
 CONFIG_PWM_MESON|y|fail|STRICT =y: provides &pwm_cd for leds-pwm. On 6.12 this is the amlogic,meson-axg-ee-pwm binding, on 6.18 the pwm-v2 rewrite.
 # --- Firewall / VPN: the whole point of the migration ----------------------
-CONFIG_NF_TABLES|ym|fail|Absent from the 5.4 vendor config. nftables is the single packet engine shared with Docker after the migration.
-CONFIG_NFT_COMPAT|ym|fail|Plan pins =m. Without it the xt_* matches Docker emits cannot be expressed through nftables.
+CONFIG_NF_TABLES|ym|fail|Absent from the 5.4 vendor config. nftables is the single packet engine the migration standardises on, replacing iptables-legacy + ipset.
+CONFIG_NFT_COMPAT|ym|fail|Plan pins =m. trixie's iptables is the nft backend, so any rule still written in iptables syntax needs xt_* matches expressible through nftables.
 CONFIG_WIREGUARD|ym|fail|Absent from the 5.4 vendor config; one of the named gaps the migration closes.
-CONFIG_NETFILTER_XT_MATCH_CONNTRACK|ym|fail|Docker's default bridge rules and any stateful firewall need it.
-CONFIG_NF_CONNTRACK|ym|fail|Required by NAT, by Docker and by the nf_conntrack_tcp_be_liberal sysctl that replaces patch 0010.
-CONFIG_NF_NAT|ym|fail|Router NAT plus Docker's masquerade rules.
+CONFIG_NETFILTER_XT_MATCH_CONNTRACK|ym|fail|Any stateful firewall rule needs it.
+CONFIG_NF_CONNTRACK|ym|fail|Required by NAT and by the nf_conntrack_tcp_be_liberal sysctl that replaces patch 0010.
+CONFIG_NF_NAT|ym|fail|Router NAT.
 CONFIG_IPV6_MULTIPLE_TABLES|y|fail|Patch 0011 must NOT be forward-ported because Armbian's meson64 config already sets it =y; if it is missing here, policy routing silently stops working.
 CONFIG_SYN_COOKIES|y|fail|Removed by patch 0009's defconfig trimming. A router facing the internet wants it back.
-# --- cgroup v2 / Docker (phase 8 gate: stat -fc %T /sys/fs/cgroup = cgroup2fs)
+# --- cgroup v2 (phase 8 gate: stat -fc %T /sys/fs/cgroup = cgroup2fs) -------
 CONFIG_CGROUPS|y|fail|systemd >=256 refuses to boot without cgroup v2; the Yocto system used a cgroup v1 tmpfs fstab hack.
-CONFIG_MEMCG|y|fail|Required for cgroup2 memory accounting and for Docker on a 512 MB box.
-CONFIG_BRIDGE|ym|warn|Docker's default bridge network. Present in Armbian's stock meson64 config and in the current 5.4 defconfig (=y).
-CONFIG_VETH|ym|warn|Docker container networking. =m in the current 5.4 defconfig.
-CONFIG_NETFILTER_XT_MATCH_ADDRTYPE|ym|warn|Docker's iptables/nft ruleset uses addrtype matches; dockerd logs a hard error without it.
+CONFIG_MEMCG|y|fail|cgroup2 memory accounting. On a 512 MB box, per-unit memory limits are how one leaking service is stopped from taking PID 1 down with it.
+CONFIG_BRIDGE|ym|warn|Bridging in its own right -- commit 6035455 added the bridge modules to the 5.4 defconfig deliberately. Present in Armbian's stock meson64 config too.
+CONFIG_VETH|ym|warn|veth pairs. Was here for container networking; the image now ships no container runtime, so this is retained only because Armbian provides it free and removing it would cost a rebuild if that changes.
+CONFIG_NETFILTER_XT_MATCH_ADDRTYPE|ym|warn|addrtype matches (local/broadcast/multicast). Was a Docker requirement; kept because it is free in Armbian's config and generally useful in a router ruleset.
 # --- Router QoS: patch 0009 removed these; the plan says do not re-apply it -
 CONFIG_NET_SCH_HTB|ym|warn|Removed by patch 0009. Armbian's config has it; a router wants shaping back.
 CONFIG_NET_SCH_TBF|ym|warn|Removed by patch 0009 (the 5.4 defconfig kept =y). Armbian's config has it.
@@ -186,7 +186,7 @@ Options:
 Severity:
   fail  a known-fatal regression: unbootable slot, unreachable box, or a
         rollback path that cannot fire. Causes exit 1.
-  warn  a degradation (router QoS, Docker niceties). Exit 0 unless --strict.
+  warn  a degradation (router QoS, container niceties). Exit 0 unless --strict.
 
 Exit: 0 all invariants hold, 1 at least one failure, 2 usage/setup error.
 

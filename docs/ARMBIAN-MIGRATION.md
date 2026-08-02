@@ -173,7 +173,6 @@ Debian trixie's e2fsprogs 1.47 enables `metadata_csum_seed` and `orphan_file` by
 
 | Item | Mechanism |
 |---|---|
-| Docker / containerd | `"data-root": "/data/docker"`, `root = "/data/containerd"` in config |
 | sshd host keys | `HostKey /data/ssh/ssh_host_ed25519_key` |
 | `/root/.ssh`, `/etc/wireguard` | symlinks baked into the image |
 | `/etc/machine-id` | **initramfs seed only** — systemd PID1 overmounts it before any unit runs, and systemd-networkd derives its DHCP DUID from it |
@@ -210,7 +209,10 @@ printf '[Manager]\nRuntimeWatchdogSec=0\n' > /run/systemd/system.conf.d/99-flash
 systemctl daemon-reexec
 [ "$(systemctl show -p RuntimeWatchdogUSec --value)" = "0" ]
 trap 'rm -f /run/systemd/system.conf.d/99-flash.conf; systemctl daemon-reexec;
-      systemctl start docker syslog-ng || true' EXIT
+      systemctl start docker containerd syslog-ng || true' EXIT
+# The Debian image ships no container runtime (see below); these are still stopped
+# because this runs on whichever slot is booted NOW, and during migration that is
+# the Yocto slot, which has them. Absent/inactive units are skipped.
 systemctl stop docker.service containerd.service syslog-ng.service
 sysctl -qw vm.dirty_bytes=16777216 vm.dirty_background_bytes=8388608 kernel.printk="3 4 1 3"
 sync; echo 3 > /proc/sys/vm/drop_caches
@@ -256,8 +258,8 @@ Batching covers only **one of three** env-write windows: `CONFIG_BOOTCOUNT_ENV=y
 | Gap today | After |
 |---|---|
 | No WireGuard (`CONFIG_WIREGUARD` absent) | `WIREGUARD=m` in Armbian's stock meson64 config |
-| No nftables (`CONFIG_NF_TABLES` absent); iptables-legacy + ipset | `NF_TABLES=m` + `NFT_COMPAT`; native nft sets, one engine shared with Docker |
-| cgroup v1 via a tmpfs fstab hack (`fstab-logs:8`); systemd ≥256 refuses to boot on v1 | cgroup v2, `native.cgroupdriver=systemd` |
+| No nftables (`CONFIG_NF_TABLES` absent); iptables-legacy + ipset | `NF_TABLES=m` + `NFT_COMPAT`; native nft sets, and `iptables` on trixie is the nft backend so there is one packet engine, not two |
+| cgroup v1 via a tmpfs fstab hack (`fstab-logs:8`); systemd ≥256 refuses to boot on v1 | cgroup v2, mounted by systemd PID 1 itself; the fstab line simply does not exist |
 | Yocto rebuild for every package change; 6 h CI | `apt`; kernel + initrd maintained by dpkg postinst hooks |
 | Kernel 5.4.62 vendor tree, EOL since Dec 2025 | Mainline LTS — 6.12 only to Dec 2026, 6.18 into late 2027; see the kernel-version note in *The DTS port* |
 | Forked GCC 10.2 in meta-smarthome-common; meta-gplv2 (bash 3.2, coreutils 6.9, tar 1.17) | Debian toolchain and userland, both deleted |
@@ -288,7 +290,7 @@ Batching covers only **one of three** env-write windows: `CONFIG_BOOTCOUNT_ENV=y
 | eMMC wear (`pre_eol_info`, `life_time_est`) | `ext_csd` — a worn card will look like a DTS bug |
 | Does `bootcount` actually persist and `altbootcmd` actually exist in the *stored* env? | Phase 1 |
 | Does U-Boot 2018.09 have `setexpr` on this unit? | `setexpr b *0xff800028 & 0x400` at `=>`; absent means pre-`0041` and the reset button does nothing |
-| ~~Is `/data` (p3) large enough for Docker images?~~ | ❌ **ANSWERED — NO.** Measured 150 MiB total, **130 MiB free**. That does not hold one Docker image, let alone a set. `rootfs/overlay/etc/docker/daemon.json` points `data-root` at `/data/docker` and **cannot be used as written**. This needs a decision before Phase 7 ships: shrink p5/p6 (650 MiB each) and grow p3, drop on-device Docker, or accept images on the A/B-protected rootfs. |
+| ~~Is `/data` (p3) large enough for Docker images?~~ | ✅ **CLOSED — Docker dropped.** Measured `/data` = 150 MiB total, 130 MiB free: not enough for one image. But the prior question was whether Docker is needed at all, and on the measured unit `docker.service` is **inactive with zero images** — and it could not work well anyway, because its data-root would sit on the root overlayfs and **overlayfs cannot be an overlayfs upperdir** (the kernel logs `not supported as upperdir` on every start attempt), leaving only the `vfs` driver, which stores every layer as a full copy on a 4 GB eMMC. So `docker.io`, `containerd` and `runc` are **removed from the Debian image**, along with `etc/docker/daemon.json` and `etc/containerd/config.toml`. This closes the `/data` capacity problem outright. If containers are ever needed: p5/p6 are 650 MiB each holding 2.0 MB of real data, so shrink them and grow p3 first, give Docker a data-root on a real filesystem, then re-add the packages (both config files are in git history). |
 
 ---
 

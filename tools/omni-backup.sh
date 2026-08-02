@@ -61,7 +61,9 @@ OPTIONS
   --allow-tight      accept a local filesystem with less free space than the
                      eMMC's full size (gzip -1 usually wins big on a mostly
                      empty eMMC, but "usually" is not a backup strategy)
-  --quiesce          stop docker/containerd/syslog-ng on the device for the
+  --quiesce          stop docker/containerd/syslog-ng on the device (whichever
+                     of them exist -- the Debian image ships no container
+                     runtime; the legacy Yocto slot does) for the
                      duration, and start them again afterwards.  Reduces the
                      chance that the eMMC changes under you between the image
                      and the md5 (which would show up as a false mismatch).
