@@ -1,2 +1,15 @@
 build/*
 .prepare
+
+# Sparse mainline kernel checkout fetched by tools/validate-dts.sh
+/.cache/
+
+# Rootfs build artifacts
+/rootfs/out/
+*.ext4
+*.ext4.gz
+
+# Editor / OS noise
+*.swp
+*~
+.DS_Store
