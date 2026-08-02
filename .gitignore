@@ -13,3 +13,7 @@ build/*
 *.swp
 *~
 .DS_Store
+
+# rootfs builder (rootfs/build-rootfs.sh) scratch and inputs
+/rootfs/.work/
+/rootfs/kernel-debs/

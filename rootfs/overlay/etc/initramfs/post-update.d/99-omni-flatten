@@ -1,0 +1,64 @@
+#!/bin/sh
+# /etc/initramfs/post-update.d/99-omni-flatten
+#
+# initramfs-tools contract (update-initramfs -> run_bootloader):
+#     run-parts --arg="${version}" --arg="${initramfs}" /etc/initramfs/post-update.d
+# so:   $1 = kernel version string   (e.g. 6.12.20-meson64)
+#       $2 = path to the initramfs that was just generated
+#            (normally /boot/initrd.img-$1)
+#
+# This fires on EVERY `update-initramfs -u`, not only on kernel installs -- which
+# is exactly why it exists separately from /etc/kernel/postinst.d/zz-omni-flatten.
+# Editing /etc/initramfs-tools/modules or the overlay script and running
+# `update-initramfs -u` must land the new initramfs under the fixed U-Boot name
+# or the next boot silently uses the previous initramfs.
+#
+# Copies, never symlinks.  See /etc/default/omni-boot and /usr/lib/omni/omni-flatten.
+#
+# Must be mode 0755.
+
+set -eu
+
+usage() {
+	cat <<'EOF'
+Usage: 99-omni-flatten <kernel-version> [initramfs-path]
+
+initramfs-tools /etc/initramfs/post-update.d hook for the Avast Omni.  Copies
+the freshly generated initramfs onto the fixed name U-Boot loads from /boot
+(mender_ramdisk_name; see /etc/default/omni-boot).
+
+Environment:
+  OMNI_FLATTEN_DRY_RUN=1   change nothing, just report what would be copied
+EOF
+}
+
+case "${1:-}" in
+-h|--help)
+	usage
+	exit 0
+	;;
+esac
+
+if [ $# -lt 1 ] || [ -z "${1:-}" ]; then
+	echo "99-omni-flatten: ERROR: no kernel version passed as \$1." >&2
+	usage >&2
+	exit 1
+fi
+
+version=$1
+initramfs=${2:-}
+
+FLATTEN=/usr/lib/omni/omni-flatten
+if [ ! -x "$FLATTEN" ]; then
+	echo "99-omni-flatten: ERROR: $FLATTEN is missing or not executable." >&2
+	echo "99-omni-flatten: refusing to leave a stale initramfs under the boot name." >&2
+	exit 1
+fi
+
+set -- "$version"
+[ -n "$initramfs" ] && set -- "$@" "$initramfs"
+if [ "${OMNI_FLATTEN_DRY_RUN:-0}" = 1 ]; then
+	set -- --dry-run "$@"
+fi
+
+exec "$FLATTEN" initrd "$@"

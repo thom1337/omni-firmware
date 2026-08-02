@@ -1,0 +1,479 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Avast Omni  --  Amlogic A113D (meson-axg), 512 MiB, eMMC, 1x RGMII GbE.
+ *
+ * Copyright (c) 2018 BayLibre SAS.  All rights reserved.
+ * Copyright (c) 2019 Avast Software s.r.o.
+ * Copyright (c) 2026 Omni firmware maintainers.
+ *
+ * Mainline (v6.12+) port of the downstream 5.4 vendor DTS that lived in
+ * meta-apollo as recipes-kernel/linux/files/0001..0014.  The port folds in:
+ *
+ *   0001  the board itself (derived from meson-axg-s400.dts)
+ *   0002  eMMC max-frequency 180 MHz -> 200 MHz
+ *   0003  RTL8211F PHY interrupt on gpio_intc line 98
+ *   0004  drop the "-evt0" suffix (board name / compatible)
+ *   0012  pstore/ramoops reservation
+ *
+ * and deliberately DROPS:
+ *
+ *   0005  "DOWNSTREAM: apollo: leds: Set initial brightness level" -- it added
+ *         a non-standard "brightness" property plus a driver hack in
+ *         leds-pwm.c / include/linux/leds_pwm.h.  leds_pwm.h no longer exists
+ *         upstream.  The mainline equivalent is default-state = "on", which
+ *         leds-pwm.c honours via led_init_default_state_get() (v6.12,
+ *         drivers/leds/leds-pwm.c:164) by seeding cdev.brightness with
+ *         max-brightness before the first led_pwm_set().
+ *   0006/0014  snps,force_thresh_dma_mode / snps,pbl / rx-fifo-depth /
+ *         tx-fifo-depth on &ethmac.  snps,pbl was written as a *string*
+ *         ("32") but stmmac reads it with of_property_read_u32(), so it never
+ *         took effect at all; and mainline meson-axg.dtsi already carries the
+ *         identical rx-fifo-depth = <4096> / tx-fifo-depth = <2048> on the
+ *         &ethmac node itself (v6.12 meson-axg.dtsi:291-292).  Re-adding them
+ *         here would be a no-op at best and a divergence to maintain at worst.
+ *
+ * Boot contract (do not break):  U-Boot 2018.09 + Mender A/B loads
+ * /boot/Image, /boot/meson-axg-apollo.dtb and the initramfs from *inside* the
+ * selected rootfs slot, so this file MUST keep producing a DTB named
+ * meson-axg-apollo.dtb (mender_dtb_name).  Renaming the file renames the DTB
+ * and bricks both slots.
+ */
+
+/dts-v1/;
+
+#include "meson-axg.dtsi"
+
+/*
+ * meson-axg.dtsi already pulls in gpio.h, meson-axg-gpio.h and irq.h, but
+ * every macro used below is spelled out here so this file stands on its own
+ * and so a future dtsi refactor cannot silently remove a definition.
+ */
+#include <dt-bindings/gpio/gpio.h>		/* GPIO_ACTIVE_LOW */
+#include <dt-bindings/gpio/meson-axg-gpio.h>	/* BOOT_9, GPIOAO_10 */
+#include <dt-bindings/input/input.h>		/* KEY_RESTART */
+#include <dt-bindings/interrupt-controller/irq.h>/* IRQ_TYPE_LEVEL_LOW */
+#include <dt-bindings/thermal/thermal.h>	/* THERMAL_NO_LIMIT */
+
+/ {
+	compatible = "avast,apollo", "amlogic,a113d", "amlogic,meson-axg";
+	model = "Avast Omni (Apollo)";
+
+	aliases {
+		serial0 = &uart_AO;
+
+		/*
+		 * ethernet0 is LOAD-BEARING.  Two independent consumers:
+		 *
+		 *  1. U-Boot's fdt_fixup_ethernet() walks /aliases looking for
+		 *     "ethernetN" and injects ${ethaddr} into that node as
+		 *     local-mac-address / mac-address.  The stored ethaddr is
+		 *     the only copy of this unit's MAC (the check_env self-heal
+		 *     in the vendor U-Boot is dead code), and
+		 *     CONFIG_NET_RANDOM_ETHADDR means losing it gives a fresh
+		 *     random MAC every boot.  Drop this alias and the MAC stops
+		 *     being injected.
+		 *
+		 *  2. systemd-udevd's DT-based interface naming (net naming
+		 *     scheme v251+) reads the same alias, which is why the NIC
+		 *     comes up as "end0" on Debian trixie instead of the "eth0"
+		 *     that Yocto/systemd 250 produced.  That rename is expected
+		 *     -- handle it in userland (.link file / Name=e*), never by
+		 *     removing this alias.
+		 */
+		ethernet0 = &ethmac;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	memory@0 {
+		device_type = "memory";
+		reg = <0x0 0x0 0x0 0x20000000>;	/* 512 MiB */
+	};
+
+	reserved-memory {
+		/*
+		 * Same cell layout as the reserved-memory node in
+		 * meson-axg.dtsi (v6.12:139-155); restated so this fragment is
+		 * readable on its own.  dtc merges it with the dtsi node.
+		 */
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/*
+		 * pstore/ramoops backing store (was patch 0012).
+		 *
+		 * The downstream node was named ramoops@f9800000 while its reg
+		 * said 0x0f400000 -- the name was simply wrong (and collided,
+		 * by name, with the pcieA@f9800000 address).  Renamed to match
+		 * the reg, which is what the unit-address is *for*.
+		 *
+		 * Deliberately NOT "no-map": ramoops persists a kernel log
+		 * across a reset by writing to this RAM with memcpy from the
+		 * linear map.  no-map would remove it from the kernel's direct
+		 * mapping and ramoops would then have to ioremap it as device
+		 * memory; on arm64 unaligned/ordering behaviour there differs
+		 * and the region must stay normal cached memory.  Not
+		 * "reusable" either -- that is a CMA-style property and would
+		 * let the page allocator hand this range out.
+		 *
+		 * 0x0f400000 + 0x10000 = 0x0f410000, comfortably inside the
+		 * 512 MiB of DRAM and clear of hwrom@0 (0..0x1000000) and
+		 * secmon@5000000 (0x5000000..0x5300000).
+		 */
+		ramoops@f400000 {
+			compatible = "ramoops";
+			reg = <0x0 0x0f400000 0x0 0x10000>;
+			record-size = <0x4000>;
+			console-size = <0x0>;
+		};
+	};
+
+	emmc_pwrseq: emmc-pwrseq {
+		compatible = "mmc-pwrseq-emmc";
+		reset-gpios = <&gpio BOOT_9 GPIO_ACTIVE_LOW>;
+	};
+
+	/*
+	 * Recovery / factory-reset button.
+	 *
+	 * "gpio-keys-polled", NOT "gpio-keys", and that is not a style choice:
+	 *
+	 *  - drivers/pinctrl/meson/pinctrl-meson.c never populates
+	 *    gpio_chip.to_irq and never registers a gpio_irq_chip, so
+	 *    gpiod_to_irq() on any &gpio / &gpio_ao line returns -ENXIO
+	 *    (drivers/gpio/gpiolib.c:3655-3673, v6.12).  Plain gpio-keys with
+	 *    only a "gpios" property therefore fails to probe with
+	 *    "Unable to get irq number for GPIO".
+	 *
+	 *  - Adding interrupt-parent/interrupts does not rescue it either:
+	 *    gpio_keys_setup_key() unconditionally requests
+	 *    IRQF_TRIGGER_RISING | IRQF_TRIGGER_FALLING whenever a gpiod is
+	 *    present (drivers/input/keyboard/gpio_keys.c:600), i.e.
+	 *    IRQ_TYPE_EDGE_BOTH, and meson8_gpio_irq_set_type() rejects
+	 *    EDGE_BOTH with -EINVAL because axg_params has
+	 *    support_edge_both = false (drivers/irqchip/irq-meson-gpio.c:135,
+	 *    :322-324).  request_irq() then fails.
+	 *
+	 * That is exactly why every mainline Amlogic board (khadas-vim,
+	 * khadas-vim2/3, radxa-zero2, ...) uses gpio-keys-polled for its
+	 * button.  Armbian's meson64 config ships CONFIG_KEYBOARD_GPIO_POLLED=y.
+	 *
+	 * If an interrupt-driven button is ever actually needed, the working
+	 * form is a child with NO "gpios" and only
+	 *     interrupt-parent = <&gpio_intc>;
+	 *     interrupts = <10 IRQ_TYPE_EDGE_FALLING>;
+	 * (hwirq 10 == GPIOAO_10: pinctrl-meson-axg.c:1017 declares
+	 * BANK("AO", GPIOAO_0, GPIOAO_13, 0, 13, ...), i.e. irq_first = 0).
+	 * That path reports press-with-auto-release and cannot read the pin.
+	 *
+	 * Note this button is *also* sampled by U-Boot directly from the pad
+	 * register (setexpr button *0xff800028 & 0x400) before Linux runs, to
+	 * divert the boot to the p7 recovery slot.  Nothing Linux does here
+	 * affects that.
+	 */
+	gpio-keys-polled {
+		compatible = "gpio-keys-polled";
+		poll-interval = <100>;
+
+		button-reset {
+			label = "reset";
+			linux,code = <KEY_RESTART>;
+			gpios = <&gpio_ao GPIOAO_10 GPIO_ACTIVE_LOW>;
+			debounce-interval = <50>;
+		};
+	};
+
+	/*
+	 * Front-panel LEDs.
+	 *
+	 * The three "label" strings are an ABI, not decoration: the initramfs
+	 * and the userland both poke
+	 *   /sys/class/leds/apollo:power/brightness
+	 *   /sys/class/leds/apollo:app1/brightness
+	 *   /sys/class/leds/apollo:app2/brightness
+	 * led_compose_name() copies props.label verbatim when no devicename is
+	 * supplied (leds-pwm passes init_data.fwnode only), so switching to the
+	 * modern function/color properties WOULD RENAME THOSE SYSFS PATHS.
+	 * Keep the labels exactly as-is.
+	 *
+	 * Child node names are led-0/1/2 because leds-pwm.yaml constrains them
+	 * to "^led(-[0-9a-f]+)?$"; the node name is unused at runtime whenever
+	 * "label" is present (drivers/leds/leds-pwm.c:150-152).
+	 *
+	 * max-brightness is mandatory here, not optional: led_pwm_set() does
+	 * do_div(duty, cdev.max_brightness) and leds-pwm defaults it to 0.
+	 *
+	 * default-brightness = <N> is NOT available on 6.12 (it landed in
+	 * 6.13); default-state = "on" is the 6.12 way to have the power LED lit
+	 * from probe onwards instead of glitching off until userland writes
+	 * brightness.  app1/app2 stay dark until something asks for them.
+	 *
+	 * 7812500 ns == 128 Hz, carried over verbatim from the vendor DTS.  On
+	 * 6.12 the PWM node is still the old "amlogic,meson-axg-ee-pwm" binding
+	 * (no clocks property); 6.18 has the meson-axg-pwm-v2 rewrite.
+	 * #pwm-cells is 3 on both, so these phandles parse either way, but the
+	 * achieved period is worth re-measuring after any branch bump.
+	 */
+	led-controller {
+		compatible = "pwm-leds";
+
+		led-0 {
+			label = "apollo:power";
+			pwms = <&pwm_ab 1 7812500 0>;
+			max-brightness = <255>;
+			default-state = "on";
+		};
+
+		led-1 {
+			label = "apollo:app1";
+			pwms = <&pwm_cd 0 7812500 0>;
+			max-brightness = <255>;
+		};
+
+		led-2 {
+			label = "apollo:app2";
+			pwms = <&pwm_ab 0 7812500 0>;
+			max-brightness = <255>;
+		};
+	};
+
+	/*
+	 * Fixed-regulator chain, unchanged from the vendor DTS:
+	 *   5V -> VCC_3V3 -> VDDIO_BOOT (1.8 V)
+	 * VCC_3V3 is the eMMC card supply (vmmc), VDDIO_BOOT the eMMC I/O
+	 * supply (vqmmc) -- 1.8 V is what makes mmc-ddr-1_8v / mmc-hs200-1_8v
+	 * legal.  Node names hyphenated to match mainline style; the labels are
+	 * unchanged because they are what &sd_emmc_c references.
+	 */
+	supply_5v: regulator-supply-5v {
+		compatible = "regulator-fixed";
+		regulator-name = "5V";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+		regulator-always-on;
+	};
+
+	vcc_3v3: regulator-vcc-3v3 {
+		compatible = "regulator-fixed";
+		regulator-name = "VCC_3V3";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+		vin-supply = <&supply_5v>;
+		regulator-always-on;
+	};
+
+	vddio_boot: regulator-vddio-boot {
+		compatible = "regulator-fixed";
+		regulator-name = "VDDIO_BOOT";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		vin-supply = <&vcc_3v3>;
+		regulator-always-on;
+	};
+
+	/*
+	 * Thermal management -- NEW, the Omni has none today.
+	 *
+	 * meson-axg.dtsi (v6.12) defines scpi_sensors with
+	 * #thermal-sensor-cells = <1> but no thermal-zones node at all, so this
+	 * defines cpu_thermal from scratch rather than adding trips to an
+	 * existing zone.  Values and structure lifted from
+	 * meson-axg-jethome-jethub-j1xx.dtsi:114-157, the only mainline AXG
+	 * board with thermal-zones.
+	 *
+	 * passive 70 C  -> cpufreq throttling via the cpu#-cooling-cells
+	 * hot     80 C  -> notification only
+	 * critical 100 C -> orderly shutdown by the thermal core
+	 *
+	 * Needs CONFIG_CPU_THERMAL (Armbian meson64: =y) and a working SCPI
+	 * sensor.  If the SCP firmware on this unit does not export sensor 0
+	 * the zone simply fails to register and logs; it cannot wedge the boot.
+	 * Confirm on serial in Phase 5 with
+	 *   cat /sys/class/thermal/thermal_zone0/{type,temp}
+	 */
+	thermal-zones {
+		cpu_thermal: cpu-thermal {
+			polling-delay-passive = <250>;
+			polling-delay = <1000>;
+			thermal-sensors = <&scpi_sensors 0>;
+
+			trips {
+				cpu_passive: cpu-passive {
+					temperature = <70000>;	/* millicelsius */
+					hysteresis = <2000>;	/* millicelsius */
+					type = "passive";
+				};
+
+				cpu_hot: cpu-hot {
+					temperature = <80000>;	/* millicelsius */
+					hysteresis = <2000>;	/* millicelsius */
+					type = "hot";
+				};
+
+				cpu_critical: cpu-critical {
+					temperature = <100000>;	/* millicelsius */
+					hysteresis = <2000>;	/* millicelsius */
+					type = "critical";
+				};
+			};
+
+			cpu_cooling_maps: cooling-maps {
+				map0 {
+					trip = <&cpu_passive>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu1 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu2 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu3 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+
+				map1 {
+					trip = <&cpu_hot>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu1 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu2 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu3 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+	};
+};
+
+/*
+ * Gigabit Ethernet.  Byte-for-byte the meson-axg-s400.dts &ethmac node (same
+ * RGMII-on-Y pinout, same RTL8211F at MDIO address 0), which is what the
+ * vendor DTS was a copy of.
+ *
+ * rx-fifo-depth / tx-fifo-depth are intentionally absent: meson-axg.dtsi
+ * already sets them to 4096 / 2048 on this very node, which is what stmmac
+ * feeds into plat->rx_fifo_size and what gates TSO.  Repeating them here only
+ * creates a second place to get them wrong.
+ *
+ * !!! phy-mode: RGMII DELAY CAVEAT -- resolve in Phase 5 before this DTS is
+ * !!! declared final.
+ *
+ * 5.4's rtl8211f_config_init() programmed only the TX delay (paged register
+ * 0xd08 reg 17 bit 8) and left the RX delay (0xd08 reg 21 bit 3) at whatever
+ * the PHY strapped/retained.  Mainline programs BOTH from phy-mode, so
+ * phy-mode = "rgmii" will actively CLEAR an RX delay that the working 5.4
+ * system may have been relying on.  The failure mode is not "no link" -- it is
+ * asymmetric packet loss that TCP hides in an aggregate iperf3 number.
+ *
+ * Procedure (plan Phase 5): with the PHY powered and linked, read page 0xd08
+ * registers 17 and 21 on the 5.4 kernel, then on 6.12 with this DTS, using
+ * cold power cycles (mains removed >= 10 s) between boots because the paged
+ * registers persist across a warm reset.  If 6.12 shows RX delay cleared where
+ * 5.4 had it set, change this to:
+ *
+ *     phy-mode = "rgmii-rxid";
+ *
+ * and re-run the per-direction iperf3 comparison.  Do not "fix" it by
+ * eyeballing throughput.
+ */
+&ethmac {
+	status = "okay";
+	pinctrl-0 = <&eth_rgmii_y_pins>;
+	pinctrl-names = "default";
+	phy-handle = <&eth_phy0>;
+	phy-mode = "rgmii";
+
+	mdio {
+		compatible = "snps,dwmac-mdio";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		eth_phy0: ethernet-phy@0 {
+			/* Realtek RTL8211F (0x001cc916) -- needs REALTEK_PHY */
+			reg = <0>;
+			interrupt-parent = <&gpio_intc>;
+			/*
+			 * gpio_intc hwirq 98 == GPIOY_14: pinctrl-meson-axg.c
+			 * :1012 declares BANK("Y", GPIOY_0, GPIOY_15, 84, 99),
+			 * so irq_first 84 + 14 = 98.  GPIOY_0..GPIOY_13 are the
+			 * RGMII bus itself, GPIOY_14 is the spare pad next to
+			 * it -- consistent with the PHY INTB line.
+			 *
+			 * Phase 4 gate: 20 cable pulls must each bump this
+			 * line's count in /proc/interrupts.  If the count stays
+			 * 0 the interrupt is decorative and phylib is polling.
+			 */
+			interrupts = <98 IRQ_TYPE_LEVEL_LOW>;
+			eee-broken-1000t;
+		};
+	};
+};
+
+/*
+ * MANDATORY.  Mainline gained nand-controller@7800 after the 5.4 vendor tree
+ * forked, and it has NO status property, i.e. it defaults to "okay".  Its
+ * second reg window is reg-names = "emmc" at 0x7800+... -> 0x7000 length 0x800,
+ * which IS &sd_emmc_c's register block, and its pinctrl-0 = <&nand_all_pins>
+ * claims emmc_nand_d0..d7 -- the same pads as &emmc_pins.
+ *
+ * Armbian's meson64 config ships CONFIG_MTD_NAND_MESON=m, so meson_nand exists
+ * and will bind.  There is no NAND on this board; leaving it enabled is a race
+ * for the eMMC pads and registers.  Belt and braces in the kernel config delta:
+ * CONFIG_MTD_NAND_MESON=n plus MODULES_BLACKLIST="meson_nand".
+ */
+&nfc {
+	status = "disabled";
+};
+
+&pwm_ab {
+	status = "okay";
+	pinctrl-0 = <&pwm_a_a_pins>, <&pwm_b_a_pins>;
+	pinctrl-names = "default";
+};
+
+&pwm_cd {
+	status = "okay";
+	pinctrl-0 = <&pwm_c_a_pins>;
+	pinctrl-names = "default";
+};
+
+/*
+ * eMMC.  This is the root device for BOTH A/B slots plus /data and recovery;
+ * every property here is a byte-for-byte carry-over of the 5.4 configuration
+ * that is known to work on this hardware (0001 + 0002).
+ *
+ * Deliberate deviation from meson-axg-s400.dts / jethub-j1xx.dtsi: they use
+ *     pinctrl-0 = <&emmc_pins>, <&emmc_ds_pins>;
+ * and this board uses <&emmc_pins> alone.  emmc_ds is the HS400 data strobe;
+ * this board only advertises mmc-hs200-1_8v, so DS is never driven, and
+ * muxing BOOT_14 to the eMMC function would be an unverified pad change on a
+ * device that cannot be recovered remotely.  Revisit only with a serial
+ * console attached and a reason.
+ *
+ * mmc-pwrseq-emmc toggles BOOT_9 (reset) at probe and, importantly, before a
+ * reboot.  A pad-numbering mistake here is invisible on a cold boot and only
+ * shows up as an intermittent failure to mount root on a warm reboot -- hence
+ * the 50-consecutive-warm-reboot item in the Phase 4 gate.
+ */
+&sd_emmc_c {
+	status = "okay";
+	pinctrl-0 = <&emmc_pins>;
+	pinctrl-1 = <&emmc_clk_gate_pins>;
+	pinctrl-names = "default", "clk-gate";
+
+	bus-width = <8>;
+	cap-mmc-highspeed;
+	max-frequency = <200000000>;
+	non-removable;
+	disable-wp;
+	mmc-ddr-1_8v;
+	mmc-hs200-1_8v;
+
+	mmc-pwrseq = <&emmc_pwrseq>;
+
+	vmmc-supply = <&vcc_3v3>;
+	vqmmc-supply = <&vddio_boot>;
+};
+
+/* Serial console, ttyAML0.  The only out-of-band access this box has. */
+&uart_AO {
+	status = "okay";
+	pinctrl-0 = <&uart_ao_a_pins>;
+	pinctrl-names = "default";
+};

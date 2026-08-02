@@ -1,0 +1,349 @@
+#!/bin/sh
+# /usr/lib/omni/omni-commit -- commit the running A/B rootfs slot.
+#
+# Run by omni-commit.service.  Committing means clearing `upgrade_available` in
+# the U-Boot environment, which permanently disarms the bootcount/bootlimit
+# rollback for this slot.  There is no undo: after this runs, a subsequent
+# failure needs the serial "=>" prompt, the reset button, or a re-flash.
+#
+# So it must only fire on POSITIVE EVIDENCE that the box is actually usable:
+#
+#   (a) at least one non-virtual Ethernet interface has carrier   AND
+#   (b) a default route exists                                    AND
+#   (c) an outbound TCP connection to a real host completes
+#
+# (a) and (b) alone are satisfiable by a switch and a DHCP server on an isolated
+# VLAN.  (c) is the only one that proves the box is reachable from the world it
+# has to be reachable from.
+#
+# WHAT IT DOES NOT DO
+# -------------------
+# It does not trust `After=network-online.target`.  After= is ORDERING, not a
+# dependency: if nothing in the transaction pulls network-online.target in, the
+# target is reached instantly and a guard built on it fires within milliseconds
+# of boot, disarming a slot that has never had an address.  That is the single
+# easiest way to turn this whole A/B design into a one-way trip.  The unit does
+# use After= for ordering, and then re-proves everything itself in a bounded
+# retry loop.
+#
+# Failure is safe by construction: if this script never commits, the box stays
+# armed, omni-deadman.timer reboots it at OnBootSec=15min, bootcount exceeds
+# bootlimit=1 and U-Boot's altbootcmd flips back to the previous slot.
+#
+# Must be mode 0755.
+
+set -eu
+
+PROG=omni-commit
+LIB=/usr/lib/omni/omni-uboot-env.sh
+
+# Tunables (overridable from the unit's Environment= or /etc/default/omni-commit)
+OMNI_COMMIT_TARGETS=${OMNI_COMMIT_TARGETS:-"1.1.1.1:53 9.9.9.9:53 8.8.8.8:53 deb.debian.org:80"}
+OMNI_COMMIT_TRIES=${OMNI_COMMIT_TRIES:-50}
+OMNI_COMMIT_INTERVAL=${OMNI_COMMIT_INTERVAL:-10}
+OMNI_COMMIT_CONNECT_TIMEOUT=${OMNI_COMMIT_CONNECT_TIMEOUT:-5}
+OMNI_DRY_RUN=${OMNI_DRY_RUN:-0}
+
+usage() {
+	cat <<'EOF'
+Usage: omni-commit [options]
+
+Commit the running A/B rootfs slot (clear upgrade_available in the U-Boot
+environment) -- but only after proving carrier + default route + a working
+outbound TCP connection.
+
+Options:
+  -n, --dry-run          run every check, print the env writes, write nothing
+  -f, --force            skip the network evidence (STILL honours the safety
+                         refusals: recovery boot, slot mismatch, missing tools).
+                         For a deliberate operator decision on the serial
+                         console, never for automation.
+  -1, --once             a single evidence attempt instead of the retry loop
+  -s, --status           report armed/committed state and exit
+  -t, --tries N          evidence attempts            (default 50)
+  -i, --interval SEC     seconds between attempts     (default 10)
+      --targets "H:P .." outbound probe targets       (default 1.1.1.1:53 ...)
+  -h, --help             this text
+
+Exit status:
+  0  slot committed, or already committed, or nothing to commit
+  1  refused (unsafe precondition) or the env write failed
+  2  no evidence of a working network within the retry budget
+
+Environment: OMNI_COMMIT_TARGETS, OMNI_COMMIT_TRIES, OMNI_COMMIT_INTERVAL,
+             OMNI_COMMIT_CONNECT_TIMEOUT, OMNI_DRY_RUN
+EOF
+}
+
+log()  { printf '%s: %s\n' "$PROG" "$*"; }
+err()  { printf '%s: %s\n' "$PROG" "$*" >&2; }
+die()  { err "REFUSING: $*"; exit 1; }
+
+FORCE=0
+ONCE=0
+STATUS_ONLY=0
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-n|--dry-run)  OMNI_DRY_RUN=1 ;;
+	-f|--force)    FORCE=1 ;;
+	-1|--once)     ONCE=1 ;;
+	-s|--status)   STATUS_ONLY=1 ;;
+	-t|--tries)    shift; OMNI_COMMIT_TRIES=${1:?--tries needs a value} ;;
+	-i|--interval) shift; OMNI_COMMIT_INTERVAL=${1:?--interval needs a value} ;;
+	--targets)     shift; OMNI_COMMIT_TARGETS=${1:?--targets needs a value} ;;
+	-h|--help)     usage; exit 0 ;;
+	*)             err "unknown option '$1'"; usage >&2; exit 1 ;;
+	esac
+	shift
+done
+export OMNI_DRY_RUN
+
+[ -r "$LIB" ] || die "$LIB is missing -- cannot touch the U-Boot environment safely"
+# shellcheck source=/dev/null disable=SC1091
+. "$LIB"
+
+# ---------------------------------------------------------------------------
+# Preconditions
+# ---------------------------------------------------------------------------
+omni_env_check_tools || die "fw_printenv/fw_setenv unavailable"
+omni_env_check_config || die "the U-Boot environment location is unusable"
+
+armed=$(omni_env_get upgrade_available)
+bootcount=$(omni_env_get bootcount)
+bootlimit=$(omni_env_get bootlimit)
+env_part=$(omni_env_get mender_boot_part)
+run_part=$(omni_slot_root_part 2>/dev/null || echo "")
+
+if [ "$STATUS_ONLY" = 1 ]; then
+	printf 'upgrade_available : %s\n' "${armed:-<unset>}"
+	printf 'bootcount         : %s\n' "${bootcount:-<unset>}"
+	printf 'bootlimit         : %s\n' "${bootlimit:-<unset>}"
+	printf 'mender_boot_part  : %s\n' "${env_part:-<unset>}"
+	printf 'running root part : %s\n' "${run_part:-<unknown>}"
+	printf 'recovery boot     : %s\n' "$(omni_is_recovery_boot && echo yes || echo no)"
+	exit 0
+fi
+
+if [ "$armed" != "1" ]; then
+	log "upgrade_available='${armed:-<unset>}' -- this slot is not armed; nothing to commit."
+	exit 0
+fi
+
+# A recovery boot (reset button, latched watchdog register at 0xff80023c, or
+# force_hard_recovery=1) runs p7 and never proves anything about a slot.
+# Committing from here would disarm a slot that has not booted once.
+if omni_is_recovery_boot; then
+	die "this is a RECOVERY boot (p7).  Committing from recovery would disarm a
+  slot that has never successfully booted.  Fix the slot, then reboot into it."
+fi
+
+# The stored pointer and the partition we are actually running from must agree.
+# If they do not, U-Boot's volatile recovery/MFC overrides are in play, or
+# something rewrote the environment behind our back; either way clearing
+# upgrade_available would arm-and-forget the wrong slot.
+if [ -n "$run_part" ] && [ -n "$env_part" ] && [ "$run_part" != "$env_part" ]; then
+	die "running from partition p$run_part but mender_boot_part=$env_part.
+  These must agree before the slot can be committed."
+fi
+if [ -z "$run_part" ]; then
+	err "WARNING: could not determine the running root partition"
+	err "WARNING: (/run/omni/slot.env absent and no usable root= on /proc/cmdline)"
+fi
+
+log "slot p${run_part:-?} is ARMED (upgrade_available=1, bootcount=${bootcount:-?}, bootlimit=${bootlimit:-?})"
+
+# ---------------------------------------------------------------------------
+# Evidence gathering
+# ---------------------------------------------------------------------------
+
+# (a) carrier on a real, non-virtual Ethernet interface.
+#     Reads sysfs directly: no iproute2, no ethtool, no assumptions about the
+#     interface being called eth0 (systemd 257 + the ethernet0 DT alias names it
+#     end0).  Virtual devices are excluded by requiring the absence of
+#     /sys/class/net/<if>/device -- bridges, veth, docker0, tun and lo have no
+#     backing device node; the stmmac NIC does.
+have_carrier() {
+	_found=1
+	for _d in /sys/class/net/*; do
+		[ -d "$_d" ] || continue
+		_if=${_d##*/}
+		[ "$_if" = lo ] && continue
+		[ -e "$_d/device" ] || continue
+		[ -r "$_d/carrier" ] || continue
+		# Reading carrier on a down interface returns EINVAL; ignore that.
+		_c=$(cat "$_d/carrier" 2>/dev/null || echo 0)
+		_o=$(cat "$_d/operstate" 2>/dev/null || echo unknown)
+		if [ "$_c" = "1" ] && [ "$_o" = "up" ]; then
+			log "carrier: $_if up"
+			_found=0
+		fi
+	done
+	return $_found
+}
+
+# (b) a default route.  Prefer iproute2, but fall back to parsing
+#     /proc/net/route (destination 00000000) so this works even on an image
+#     where iproute2 somehow is not installed.
+have_default_route() {
+	if command -v ip >/dev/null 2>&1; then
+		if [ -n "$(ip -4 route show default 2>/dev/null)" ]; then
+			log "default route: present (ip -4)"
+			return 0
+		fi
+		if [ -n "$(ip -6 route show default 2>/dev/null)" ]; then
+			log "default route: present (ip -6)"
+			return 0
+		fi
+	fi
+	if [ -r /proc/net/route ] && command -v awk >/dev/null 2>&1; then
+		if awk 'NR>1 && $2 == "00000000" { exit 0 } END { exit 1 }' /proc/net/route; then
+			log "default route: present (/proc/net/route)"
+			return 0
+		fi
+	fi
+	return 1
+}
+
+# (c) a completed outbound TCP connection.  Try every mechanism the image might
+#     have, in order of directness.  If NONE of them exist we return failure --
+#     never "assume success" -- so the box rolls back rather than committing on
+#     an unverified network.
+tcp_connect() {
+	_host=${1%%:*}
+	_port=${1##*:}
+	[ -n "$_host" ] && [ -n "$_port" ] || return 1
+	_to=$OMNI_COMMIT_CONNECT_TIMEOUT
+
+	if [ -x /bin/bash ] || command -v bash >/dev/null 2>&1; then
+		# bash's /dev/tcp is a pure-libc connect(2); no packages needed.
+		if bash -c "exec 3<>/dev/tcp/$_host/$_port" 2>/dev/null; then
+			return 0
+		fi
+		# A refused/unreachable connect is a real answer; keep trying others
+		# only because bash may have been built without --enable-net-redirections.
+	fi
+	if command -v curl >/dev/null 2>&1; then
+		curl -sS --max-time "$_to" --connect-timeout "$_to" \
+			-o /dev/null "telnet://$_host:$_port" </dev/null 2>/dev/null && return 0
+	fi
+	if command -v nc >/dev/null 2>&1; then
+		nc -w "$_to" -z "$_host" "$_port" >/dev/null 2>&1 && return 0
+	fi
+	if command -v python3 >/dev/null 2>&1; then
+		python3 - "$_host" "$_port" "$_to" <<'PY' >/dev/null 2>&1 && return 0
+import socket, sys
+try:
+    s = socket.create_connection((sys.argv[1], int(sys.argv[2])), float(sys.argv[3]))
+    s.close()
+except Exception:
+    sys.exit(1)
+PY
+	fi
+	if command -v wget >/dev/null 2>&1 && [ "$_port" = 80 ]; then
+		wget -q -T "$_to" -O /dev/null "http://$_host/" 2>/dev/null && return 0
+	fi
+	return 1
+}
+
+have_tcp_probe_tool() {
+	command -v bash    >/dev/null 2>&1 && return 0
+	command -v curl    >/dev/null 2>&1 && return 0
+	command -v nc      >/dev/null 2>&1 && return 0
+	command -v python3 >/dev/null 2>&1 && return 0
+	command -v wget    >/dev/null 2>&1 && return 0
+	return 1
+}
+
+have_outbound() {
+	for _t in $OMNI_COMMIT_TARGETS; do
+		if tcp_connect "$_t"; then
+			log "outbound TCP: connected to $_t"
+			return 0
+		fi
+	done
+	return 1
+}
+
+gather_evidence() {
+	have_carrier       || { log "no carrier yet"; return 1; }
+	have_default_route || { log "no default route yet"; return 1; }
+	have_outbound      || { log "no outbound TCP connection yet"; return 1; }
+	return 0
+}
+
+if [ "$FORCE" = 1 ]; then
+	log "--force: skipping the network evidence (operator override)"
+else
+	if ! have_tcp_probe_tool; then
+		err "no way to make an outbound TCP connection: none of bash, curl, nc,"
+		err "python3 or wget is installed.  Refusing to commit on unverified"
+		err "evidence -- the deadman timer will roll this slot back."
+		exit 2
+	fi
+
+	tries=$OMNI_COMMIT_TRIES
+	[ "$ONCE" = 1 ] && tries=1
+	n=0
+	ok=0
+	while [ "$n" -lt "$tries" ]; do
+		n=$((n + 1))
+		if gather_evidence; then
+			ok=1
+			log "evidence complete on attempt $n/$tries"
+			break
+		fi
+		[ "$n" -ge "$tries" ] && break
+		sleep "$OMNI_COMMIT_INTERVAL"
+	done
+
+	if [ "$ok" != 1 ]; then
+		err "no positive network evidence after $tries attempts"
+		err "($((tries * OMNI_COMMIT_INTERVAL))s).  NOT committing."
+		err "omni-deadman.timer will reboot at OnBootSec=15min; bootcount will"
+		err "exceed bootlimit=1 and U-Boot's altbootcmd will flip back."
+		exit 2
+	fi
+fi
+
+# ---------------------------------------------------------------------------
+# Commit.
+#
+# Order matters and is not arbitrary.  upgrade_available goes FIRST: if power is
+# lost between the two writes the slot is already committed, which is the safe
+# half-state.  The reverse order would leave a slot armed with bootcount=0,
+# buying it one extra unmonitored boot.
+#
+# bootcount is reset for hygiene only -- U-Boot's bootcount_env driver returns 0
+# from bootcount_load() whenever upgrade_available is 0, so the stale value is
+# already inert.
+# ---------------------------------------------------------------------------
+trap 'omni_env_cleanup' EXIT INT TERM HUP
+
+omni_env_unlock || die "cannot make the U-Boot environment writable"
+
+if ! omni_env_set upgrade_available 0; then
+	err "FAILED to clear upgrade_available.  The slot stays armed; the deadman"
+	err "will reboot and U-Boot will roll back.  That is the correct outcome."
+	exit 1
+fi
+omni_env_set bootcount 0 || err "WARNING: could not reset bootcount (harmless while upgrade_available=0)"
+
+omni_env_lock
+
+# Read back and assert -- a non-redundant environment gets verified every time.
+omni_env_assert upgrade_available 0 || {
+	err "READ-BACK FAILED after clearing upgrade_available."
+	err "The environment may be torn.  Do NOT power cycle.  Restore from"
+	err "omni-boot0.img at the serial '=>' prompt if the next boot misbehaves."
+	exit 1
+}
+
+if [ "$OMNI_DRY_RUN" = 1 ]; then
+	log "[dry-run] would have committed slot p${run_part:-?}"
+else
+	log "slot p${run_part:-?} COMMITTED (upgrade_available=0)"
+fi
+
+sync 2>/dev/null || :
+exit 0

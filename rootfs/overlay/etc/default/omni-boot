@@ -1,0 +1,74 @@
+# /etc/default/omni-boot -- U-Boot-facing boot artefact names for the Avast Omni.
+#
+# Sourced (POSIX sh) by:
+#   /etc/kernel/postinst.d/zz-omni-flatten
+#   /etc/initramfs/post-update.d/99-omni-flatten
+#   /usr/lib/omni/omni-flatten
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# U-Boot 2018.09 (Mender A/B contract) loads three files by FIXED name from
+# /boot INSIDE the selected rootfs slot:
+#
+#     load ${mender_uboot_root} ${fdt_addr_r}     /boot/${mender_dtb_name}
+#     load ${mender_uboot_root} ${kernel_addr_r}  /boot/${mender_kernel_name}
+#     load ${mender_uboot_root} ${ramdisk_addr_r} /boot/${mender_ramdisk_name}
+#
+# Those three names live in the single, non-redundant 8 KB U-Boot environment
+# and are GLOBAL -- not per slot.  Slot A (Yocto) and slot B (Debian) must both
+# provide files under exactly these names or rollback stops being symmetric.
+# Debian names its artefacts vmlinuz-<ver> / initrd.img-<ver> / dtb-<ver>/...,
+# so the flatten hooks copy (never symlink -- U-Boot's ext4 symlink handling is
+# not something we want in the boot path) the real files onto these names.
+#
+# ############################################################################
+# ##                                                                        ##
+# ##  W A R N I N G  --  THE VALUES BELOW ARE THE *COMPILED* DEFAULTS.      ##
+# ##  THEY ARE NOT DEVICE TRUTH.  DO NOT SHIP AN IMAGE WITH THEM UNVERIFIED.##
+# ##                                                                        ##
+# ##  Migration plan pre-flight check P4 REQUIRES that this file be         ##
+# ##  regenerated from the values captured verbatim off the DEVICE:         ##
+# ##                                                                        ##
+# ##     ssh root@omni 'fw_printenv mender_kernel_name \                    ##
+# ##                                mender_dtb_name    \                    ##
+# ##                                mender_ramdisk_name'                    ##
+# ##                                                                        ##
+# ##  A field U-Boot binary may predate patches 0050/0051 and carry         ##
+# ##  DIFFERENT strings.  If these three values do not match the STORED     ##
+# ##  environment exactly, U-Boot loads the previous kernel (silently       ##
+# ##  booting an old kernel against a new rootfs) or fails the load and     ##
+# ##  drops to the "=>" prompt.  Never type these from the U-Boot patches.  ##
+# ##                                                                        ##
+# ##  The build must fail closed: rootfs/build.sh is expected to refuse to  ##
+# ##  pack an image while OMNI_BOOT_VERIFIED is not "yes".                  ##
+# ##                                                                        ##
+# ############################################################################
+
+# Set to "yes" ONLY by the Phase 0 capture, after diffing against fw_printenv
+# on the real device.  Anything else means "these are unverified defaults".
+OMNI_BOOT_VERIFIED="no"
+
+# Host that the values were captured from, and when (free-form, for audit).
+OMNI_BOOT_CAPTURED_FROM=""
+OMNI_BOOT_CAPTURED_AT=""
+
+# --- The three names U-Boot loads. Must equal the stored env, byte for byte. --
+
+# fw_printenv -n mender_kernel_name
+OMNI_KERNEL_NAME="Image"
+
+# fw_printenv -n mender_dtb_name
+OMNI_DTB_NAME="meson-axg-apollo.dtb"
+
+# fw_printenv -n mender_ramdisk_name
+OMNI_INITRD_NAME="apollo-initramfs-image-meson-apollo.cpio.gz"
+
+# --- Build-side inputs (these are OUR names, not U-Boot's) -------------------
+
+# Path of the compiled DTB *relative to the kernel package's DTB directory*
+# (Armbian linux-dtb-* installs /boot/dtb-<ver>/<this>; Debian linux-image
+# installs /usr/lib/linux-image-<ver>/<this>).  The flatten hook searches both.
+OMNI_DTB_SRC="amlogic/meson-axg-apollo.dtb"
+
+# Directory the three fixed names are written into.  U-Boot hardcodes "/boot".
+OMNI_BOOT_DIR="/boot"

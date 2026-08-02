@@ -1,0 +1,33 @@
+[Unit]
+Description=Deadman: reboot an A/B slot that never committed
+Documentation=file:/usr/lib/omni/omni-deadman
+
+# Triggered ONLY by omni-deadman.timer.  Deliberately not WantedBy= anything:
+# starting it by hand outside the timer is a legitimate operator action
+# (`systemctl start omni-deadman`), but nothing should pull it in at boot.
+ConditionPathExists=/etc/fw_env.config
+
+# The whole point is to reboot a wedged system, so it must not be ordered after
+# anything that could itself be wedged.
+DefaultDependencies=no
+After=basic.target
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/omni/omni-deadman
+
+# The script sleeps between escalation steps (systemctl reboot -> reboot -f ->
+# sysrq).  It is normally killed partway through the first step by the reboot
+# it just requested; that is success, not a timeout.
+TimeoutStartSec=180
+# Do not let a timeout mark the unit failed and hide the log line that matters.
+SuccessExitStatus=0 1
+
+StandardOutput=journal+console
+StandardError=journal+console
+SyslogIdentifier=omni-deadman
+
+User=root
+NoNewPrivileges=yes

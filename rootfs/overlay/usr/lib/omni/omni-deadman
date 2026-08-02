@@ -1,0 +1,161 @@
+#!/bin/sh
+# /usr/lib/omni/omni-deadman -- reboot an A/B slot that never committed.
+#
+# Run once by omni-deadman.timer at OnBootSec=15min.
+#
+# The rollback chain is: bootcount exceeds bootlimit -> U-Boot runs altbootcmd
+# -> mender_altbootcmd flips mender_boot_part and clears upgrade_available.
+# EVERY link in that chain needs the box to actually REBOOT.  A slot that boots
+# far enough to run systemd but not far enough to be usable -- no address, no
+# sshd, a wedged service -- will sit there forever.  The device is headless in a
+# closet with no remote power and no BMC.  Nothing else will power-cycle it.
+#
+# So: if `upgrade_available` is still 1 fifteen minutes into an armed boot, the
+# commit did not happen and is not going to.  Reboot.  U-Boot does the rest.
+#
+# This is deliberately dumb.  It does not wait for omni-commit.service, does not
+# retry the network checks, and does not try to be clever about "maybe it is
+# still coming up".  The timeouts are sized so that omni-commit's own bounded
+# retry loop (50 x 10 s = ~8.3 min, started from multi-user.target) has finished
+# long before this fires, and a dumb deadman is the point.
+#
+# Must be mode 0755.
+
+set -eu
+
+PROG=omni-deadman
+LIB=/usr/lib/omni/omni-uboot-env.sh
+DRYRUN=0
+GRACE=0
+
+usage() {
+	cat <<'EOF'
+Usage: omni-deadman [options]
+
+If the running A/B slot is still armed (upgrade_available=1), reboot so that
+U-Boot's bootcount/bootlimit rollback can fire.  Does nothing at all on a
+committed slot.
+
+Options:
+  -n, --dry-run       report the decision, never reboot
+  -g, --grace SEC     if omni-commit.service is still 'activating', wait up to
+                      SEC seconds for it to finish before deciding (default 0)
+  -s, --status        print state and exit 0
+  -h, --help          this text
+
+Exit status:
+  0  slot already committed (nothing to do), or --dry-run/--status
+  1  could not determine the state (tools or env unavailable)
+  (a real run that decides to reboot does not return)
+EOF
+}
+
+log() { printf '%s: %s\n' "$PROG" "$*"; }
+err() { printf '%s: %s\n' "$PROG" "$*" >&2; }
+
+STATUS_ONLY=0
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-n|--dry-run) DRYRUN=1 ;;
+	-g|--grace)   shift; GRACE=${1:?--grace needs a value} ;;
+	-s|--status)  STATUS_ONLY=1 ;;
+	-h|--help)    usage; exit 0 ;;
+	*)            err "unknown option '$1'"; usage >&2; exit 1 ;;
+	esac
+	shift
+done
+
+[ -r "$LIB" ] || { err "$LIB missing -- cannot read the U-Boot environment"; exit 1; }
+# shellcheck source=/dev/null disable=SC1091
+. "$LIB"
+
+if ! omni_env_check_tools; then
+	err "fw_printenv unavailable: cannot tell whether this slot is armed."
+	err "Doing nothing.  A box that cannot read its own boot state must not be"
+	err "rebooted on a guess."
+	exit 1
+fi
+
+armed=$(omni_env_get upgrade_available)
+part=$(omni_slot_root_part 2>/dev/null || echo "?")
+bootcount=$(omni_env_get bootcount)
+bootlimit=$(omni_env_get bootlimit)
+
+commit_state="unknown"
+if command -v systemctl >/dev/null 2>&1; then
+	commit_state=$(systemctl is-active omni-commit.service 2>/dev/null || true)
+	[ -n "$commit_state" ] || commit_state="unknown"
+fi
+
+if [ "$STATUS_ONLY" = 1 ]; then
+	printf 'upgrade_available    : %s\n' "${armed:-<unset>}"
+	printf 'bootcount/bootlimit  : %s/%s\n' "${bootcount:-?}" "${bootlimit:-?}"
+	printf 'running root part    : p%s\n' "$part"
+	printf 'omni-commit.service  : %s\n' "$commit_state"
+	exit 0
+fi
+
+if [ "$armed" != "1" ]; then
+	log "slot p$part is committed (upgrade_available='${armed:-<unset>}') -- nothing to do."
+	exit 0
+fi
+
+# Optional courtesy window: only ever waits while the commit service is still
+# genuinely running.  Default 0 -- the deadman is supposed to be dumb.
+if [ "$GRACE" -gt 0 ] 2>/dev/null && [ "$commit_state" = "activating" ]; then
+	log "omni-commit.service is still activating; granting ${GRACE}s of grace"
+	waited=0
+	while [ "$waited" -lt "$GRACE" ]; do
+		sleep 5
+		waited=$((waited + 5))
+		commit_state=$(systemctl is-active omni-commit.service 2>/dev/null || true)
+		[ "$commit_state" = "activating" ] || break
+	done
+	armed=$(omni_env_get upgrade_available)
+	if [ "$armed" != "1" ]; then
+		log "committed during the grace window -- nothing to do."
+		exit 0
+	fi
+fi
+
+err "############################################################"
+err "# DEADMAN: slot p$part is STILL ARMED 15 minutes into boot."
+err "# upgrade_available=1, bootcount=${bootcount:-?}, bootlimit=${bootlimit:-?}"
+err "# omni-commit.service state: $commit_state"
+err "# Rebooting so U-Boot's bootlimit rollback can fire."
+err "# Expected on the serial console at the next boot:"
+err "#   Warning: Bootlimit (1) exceeded. Using altbootcmd."
+err "############################################################"
+
+if [ "$DRYRUN" = 1 ]; then
+	log "[dry-run] would reboot now"
+	exit 0
+fi
+
+sync 2>/dev/null || :
+
+# Escalating reboot.  Each step is best-effort; systemd will normally kill this
+# script partway through the first one, which is exactly what success looks like.
+if command -v systemctl >/dev/null 2>&1; then
+	systemctl --no-block reboot 2>/dev/null || true
+fi
+sleep 60
+
+err "clean reboot did not take effect after 60s -- forcing"
+if command -v reboot >/dev/null 2>&1; then
+	reboot -f 2>/dev/null || true
+fi
+sleep 20
+
+err "reboot -f did not take effect -- using sysrq"
+[ -w /proc/sys/kernel/sysrq ] && printf '1\n' >/proc/sys/kernel/sysrq 2>/dev/null || :
+printf 's\n' >/proc/sysrq-trigger 2>/dev/null || :
+sleep 5
+printf 'b\n' >/proc/sysrq-trigger 2>/dev/null || :
+
+# If even sysrq did nothing, the hardware watchdog (RuntimeWatchdogSec=10) is
+# the last resort -- but note that a watchdog reset diverts to p7 recovery, NOT
+# to the other slot.  See migration risk #1.
+sleep 30
+err "could not reboot this machine by any means"
+exit 1

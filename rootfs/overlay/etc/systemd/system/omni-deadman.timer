@@ -1,0 +1,27 @@
+[Unit]
+Description=Deadman timer: reboot at T+15min if the A/B slot never committed
+Documentation=file:/usr/lib/omni/omni-deadman
+
+# Must not be gated on anything that could itself be broken -- that is the point
+# of a deadman.  In particular: no ConditionPathExists on /data, no network.
+ConditionPathExists=/etc/fw_env.config
+
+[Timer]
+# 15 minutes after boot, once.  Sized against omni-commit.service:
+#   commit starts around T+30s, gives up at worst around T+30s+700s = T+12min,
+#   leaving ~3 minutes of margin before this fires.
+OnBootSec=15min
+
+# Wall-clock accurate: this is a safety timer, not a housekeeping job, and
+# systemd's default 1-minute accuracy would let it coalesce with unrelated
+# timers and drift.
+AccuracySec=1s
+
+# One shot per boot.  Persistent=false is the default and is what we want: a
+# missed timer across a reboot must NOT fire immediately on the next boot.
+Persistent=false
+
+Unit=omni-deadman.service
+
+[Install]
+WantedBy=timers.target
