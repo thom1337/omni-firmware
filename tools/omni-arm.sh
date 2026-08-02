@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 #
 # omni-arm.sh - arm an A/B rootfs slot on the Avast Omni.
 #
@@ -7,7 +7,15 @@
 # upgrade_available=1 so U-Boot's bootcount/bootlimit machinery is live for
 # the next boot.  One batched, verified environment write.
 #
-set -euo pipefail
+# POSIX sh, not bash: the stock Yocto image has no bash at all and /bin/sh is
+# zsh.  See the porting rationale and the list of banned constructs at the top
+# of omni-lib.sh; it is not repeated here.
+#
+set -eu
+# pipefail is not POSIX and dash does not have it.  Enable it only where the
+# shell supports it; the pipe_status_* helpers, not pipefail, are what the
+# safety checks rely on.
+if ( set -o pipefail ) 2>/dev/null; then set -o pipefail; fi
 
 OMNI_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 # shellcheck source=omni-lib.sh

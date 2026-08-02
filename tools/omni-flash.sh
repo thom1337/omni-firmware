@@ -1,7 +1,13 @@
-#!/bin/bash
+#!/bin/sh
 #
 # omni-flash.sh - install a rootfs image into the inactive A/B slot of the
 # Avast Omni, verify it, and arm it.
+#
+# POSIX sh, deliberately: the stock Yocto image has no bash at all and /bin/sh
+# is a symlink to /bin/zsh, whose sh-emulation has no PIPESTATUS.  The rationale
+# and the full list of banned constructs live at the top of omni-lib.sh; the
+# ${PIPESTATUS[*]} truncation guard below is now pipe_status_reset/_mark/_string
+# from that file.
 #
 # Runs ON the device.  This is the "Flashing and rollback" section of
 # docs/ARMBIAN-MIGRATION.md, implemented properly:
@@ -18,7 +24,11 @@
 # Nothing outside the target slot's rootfs partition and its own overlay upper
 # is ever written, and the boot pointer moves only after every check passed.
 #
-set -euo pipefail
+set -eu
+# pipefail is not POSIX and dash does not have it.  Keep it where the shell has
+# it, carry on without it where it does not: the safety decisions below are made
+# by pipe_status_* (which works everywhere), never by pipefail.
+if ( set -o pipefail ) 2>/dev/null; then set -o pipefail; fi
 
 OMNI_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 # shellcheck source=omni-lib.sh
@@ -681,8 +691,16 @@ if [ "$DRY_RUN" = "1" ]; then
 else
     DDERR="$(omni_rundir)/dd.err"
     set +e
-    stream_source | decompress | dd of="$TGT_DEV" bs=1M iflag=fullblock conv=fsync 2>"$DDERR"
-    PIPE_RC="${PIPESTATUS[*]}"
+    # Truncation guard #1a: every stage's own exit status.  A transfer that is
+    # cut short still lets dd exit 0, so the source stage's status is the only
+    # thing that reports it.  Each stage records its status in a file (POSIX
+    # pipelines run each stage in a subshell, so a variable cannot come back);
+    # pipe_status_string renders them in bash's "${PIPESTATUS[*]}" format.
+    pipe_status_reset
+    { stream_source; pipe_status_mark 1; } \
+        | { decompress; pipe_status_mark 2; } \
+        | { dd of="$TGT_DEV" bs=1M iflag=fullblock conv=fsync 2>"$DDERR"; pipe_status_mark 3; }
+    PIPE_RC=$(pipe_status_string 3)
     set -e
     [ -s "$DDERR" ] && sed 's/^/    dd: /' "$DDERR" >&2
 
@@ -726,8 +744,11 @@ else
     banner "verify"
     log "hashing the first $IMG_SIZE bytes of $TGT_DEV"
     set +e
-    ACTUAL=$(head -c "$IMG_SIZE" "$TGT_DEV" | sha256sum | cut -d' ' -f1)
-    VRC="${PIPESTATUS[*]}"
+    pipe_status_reset
+    ACTUAL=$( { head -c "$IMG_SIZE" "$TGT_DEV"; pipe_status_mark 1; } \
+              | { sha256sum; pipe_status_mark 2; } \
+              | { cut -d' ' -f1; pipe_status_mark 3; } )
+    VRC=$(pipe_status_string 3)
     set -e
     case "$VRC" in
         "0 0 0") ;;

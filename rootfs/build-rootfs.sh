@@ -916,8 +916,25 @@ fi
 
 [ "$fail" = 0 ] || exit 1
 
+# Space reclamation, carefully scoped. Two things that look tidy here are NOT:
+#
+#   rm -rf /tmp/*                 mmdebstrap keeps its OWN control files inside
+#                                 the chroot's /tmp (mmdebstrap.apt.conf.XXXX).
+#                                 Deleting them breaks the "cleaning package
+#                                 lists and apt cache" step it runs AFTER this
+#                                 hook, which then dies with
+#                                 "Unable to read .../mmdebstrap.apt.conf..."
+#                                 followed by apt EPERM on /var/lib/apt/lists.
+#   rm -rf /var/lib/apt/lists/*   removes the partial/ and auxfiles/ directories
+#                                 apt expects to exist; apt then tries to
+#                                 recreate and chown them to _apt and fails
+#                                 inside the unshare namespace.
+#
+# mmdebstrap already empties the lists and the archive cache itself, immediately
+# after this hook returns. Leave both to it and only drop the .deb archives,
+# which it is happy for us to have removed early.
 apt-get clean
-rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb /tmp/* 2>/dev/null || true
+rm -f /var/cache/apt/archives/*.deb 2>/dev/null || true
 echo "I: 60-finalise: ok"
 IN_CHROOT
 HOOK60
@@ -1256,6 +1273,10 @@ info "  (--sha256 is the DECOMPRESSED digest omni-flash.sh verifies off the part
 info "   both values are also in ${NAME}.ext4.sha256 and ${NAME}.ext4.size)"
 if [ "$BLOCKS_EXPLICIT" = 0 ]; then
 	printf '\n' >&2
-	warn "block count was the placeholder default. Confirm p1/p2 are at least ${IMG_BYTES} bytes"
-	warn "before arming: ssh root@omni 'blockdev --getsize64 /dev/mmcblk0p1'"
+	info "block count is the MEASURED default: ${BLOCKS} x ${BLOCK_SIZE} = ${IMG_BYTES} bytes,"
+	info "which is exactly the size of p1/p2 on the unit measured on 2026-08-02"
+	info "(docs/HARDWARE-MEASURED.md). Confirm it still holds for the target unit:"
+	info "    blockdev --getsize64 /dev/mmcblk0p1     # expect ${IMG_BYTES}"
+	info "A slot smaller than this is refused before mke2fs runs; a larger one just"
+	info "leaves the tail unused, which is harmless."
 fi

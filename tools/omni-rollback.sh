@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 #
 # omni-rollback.sh - deliberately roll back to the other A/B slot on the
 # Avast Omni.
@@ -7,7 +7,13 @@
 # mender_altbootcmd does when bootlimit is exceeded: flip mender_boot_part
 # (and _hex), clear bootcount, clear upgrade_available - then reboot.
 #
-set -euo pipefail
+# POSIX sh, not bash: the stock image has no bash and /bin/sh is zsh.  The full
+# rationale and the list of banned constructs live in omni-lib.sh's header.
+#
+# pipefail is not POSIX and dash does not have it; enable it only where the
+# shell has it.  Nothing here relies on it (this script runs no pipelines).
+set -eu
+if ( set -o pipefail ) 2>/dev/null; then set -o pipefail; fi
 
 OMNI_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 # shellcheck source=omni-lib.sh

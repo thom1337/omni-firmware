@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # omni-lib.sh - shared helpers for the Avast Omni A/B lifecycle scripts.
 #
 # Source this from the other omni-*.sh scripts:
@@ -9,10 +9,10 @@
 # It can also be executed directly for `--help` and `--self-test`.
 #
 # TARGET: runs ON the Omni (Amlogic A113D / meson-axg, 512 MB, eMMC), under the
-# stock Yocto userland (bash 3.2, coreutils 6.9, no mktemp, no e2fsck) *and*
-# under Debian trixie after the migration.  Everything here is deliberately
-# written to bash 3.2 / POSIX-ish tool levels: no associative arrays, no
-# readarray, no ${var,,}, no `mapfile`, no GNU-only flags without a probe.
+# stock Yocto userland (/bin/sh -> /bin/zsh, coreutils 6.9, no mktemp, no e2fsck)
+# *and* under Debian trixie after the migration.  Everything here is deliberately
+# written to POSIX sh / coreutils-6.9 tool levels: no arrays, no PIPESTATUS, no
+# ${var,,}, no GNU-only flags without a probe.
 #
 # ---------------------------------------------------------------------------
 # THE ONE THING TO REMEMBER ABOUT THIS BOX
@@ -42,30 +42,52 @@
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# INTERPRETER GUARD -- read this before "fixing" the shebang to /bin/sh.
-#
-# MEASURED ON THE DEVICE 2026-08-02: the shipping Yocto image has NO bash.
-# /bin/sh is a symlink to /bin/zsh, and zsh's sh-emulation does NOT provide
-# PIPESTATUS (it spells it `pipestatus`). These scripts use PIPESTATUS to tell
-# a truncated download apart from a successful one, and bash arrays in
-# env_batch_write(). Under the device's sh, PIPESTATUS expands to empty, so a
-# check like `case "${PIPESTATUS[*]}" in "0 0 0")` silently takes the failure
-# branch -- fail-safe, but the tool no longer works.
-#
-# So these scripts currently run on the DEBIAN slot (which has bash) and on a
-# workstation, but NOT on the stock Yocto system. Making them usable for Phase 0
-# and Phase 1 on the unmodified device requires a real POSIX rewrite (drop
-# PIPESTATUS in favour of explicit status files, drop arrays). Until that is
-# done, this guard makes the failure obvious instead of subtle.
+# THIS FILE IS POSIX sh, AND THAT IS NOT A STYLE PREFERENCE
 # ---------------------------------------------------------------------------
-if [ -z "${BASH_VERSION:-}" ]; then
-    printf 'ERROR: %s requires bash, and this shell is not bash.\n' "${0##*/}" >&2
-    printf '  The stock Omni Yocto image has no bash at all (/bin/sh -> /bin/zsh).\n' >&2
-    printf '  Running these under zsh-as-sh breaks PIPESTATUS-based truncation\n' >&2
-    printf '  detection, so they are refused rather than run half-working.\n' >&2
-    printf '  See docs/HARDWARE.md ("Shell") for the measurement and the plan.\n' >&2
-    exit 90
-fi
+# MEASURED ON THE DEVICE 2026-08-02 (docs/HARDWARE-MEASURED.md): the shipping
+# Yocto image has NO bash anywhere.  /bin/sh is a symlink to /bin/zsh, and zsh's
+# sh-emulation does not provide PIPESTATUS (its own spelling is `pipestatus`).
+# The earlier bash-only version of these scripts therefore either refused to
+# start at all (`#!/bin/bash`: no such interpreter) or, when run explicitly under
+# sh, silently took every failure branch, because a test like
+# `case "${PIPESTATUS[*]}" in "0 0 0")` was comparing against an empty string.
+#
+# Phase 0 (the pre-flight inventory) and Phase 1 (the first-ever A/B
+# arm/commit/rollback) of docs/ARMBIAN-MIGRATION.md have to run on the
+# UNMODIFIED device, i.e. under zsh-as-sh.  That is the whole reason this file
+# is POSIX.  An earlier revision carried an interpreter guard that refused to
+# run outside bash; the port removed it, because "refuse to run" is exactly the
+# outcome the guard was there to make visible.
+#
+# Every tools/omni-*.sh must parse AND behave under all three of:
+#
+#     dash -n <file>
+#     zsh --emulate sh -n <file>
+#     busybox ash -n <file>
+#
+# Constructs banned in this directory, and what to use instead:
+#
+#   ${PIPESTATUS[...]}        -> pipe_status_reset / pipe_status_mark /
+#                                pipe_status_string (defined below)
+#   arrays: declare -a, local -a, arr=(...), ${arr[@]}, ${#arr[@]}
+#                             -> keep the list in "$@" and give each pass over it
+#                                its own helper function (see env_batch_write)
+#   [[ ... ]]                 -> [ ... ]
+#   $'...'                    -> a constant built with printf (_OMNI_TAB, _OMNI_NL)
+#   ${v//a/b} ${v^^} ${v,,}   -> sed / tr
+#   <<< herestring            -> printf ... | cmd, or a heredoc
+#   function name() { }       -> name() { }
+#   ${BASH_SOURCE[0]}         -> "$0" (see the direct-invocation block at the end)
+#   BASH_VERSION, RANDOM, SECONDS
+#   echo -e / echo -n         -> printf
+#   read -a, mapfile, readarray
+#   (( ... )) as a command    -> : "$(( ... ))"  or  [ "$(( ... ))" -eq n ]
+#   set -o pipefail           -> dash does not have it; enable it only behind the
+#                                probe used at the bottom of this file
+#
+# `local` IS allowed and is used freely: dash, busybox ash and zsh-as-sh all
+# implement it with the same dynamic scoping.  `local -a` / `local -i` are not.
+# ---------------------------------------------------------------------------
 
 # Guard against double-sourcing.
 if [ -n "${OMNI_LIB_LOADED:-}" ]; then
@@ -80,6 +102,23 @@ export LC_ALL=C
 case ":$PATH:" in *:/sbin:*) ;; *) PATH="$PATH:/sbin" ;; esac
 case ":$PATH:" in *:/usr/sbin:*) ;; *) PATH="$PATH:/usr/sbin" ;; esac
 export PATH
+
+# ---------------------------------------------------------------------------
+# Character constants (the POSIX stand-in for $'\t' and $'\n')
+# ---------------------------------------------------------------------------
+# These are used as `case` patterns.  If either ended up EMPTY, the pattern
+# *""* would match every value and _env_validate_pair would reject everything,
+# so build them defensively and refuse to load if the shell cannot manage it.
+_OMNI_TAB=$(printf '\t')
+# Command substitution strips trailing newlines, hence the sacrificial 'x'.
+_OMNI_NL=$(printf '\nx'); _OMNI_NL=${_OMNI_NL%x}
+if [ "${#_OMNI_TAB}" -ne 1 ] || [ "${#_OMNI_NL}" -ne 1 ]; then
+    printf 'ERROR: omni-lib.sh: this shell cannot build the tab/newline constants\n' >&2
+    printf '  (printf %%s produced tab=%s bytes, newline=%s bytes, expected 1 each).\n' \
+        "${#_OMNI_TAB}" "${#_OMNI_NL}" >&2
+    printf '  Refusing to load: env value validation would be wrong.\n' >&2
+    return 91 2>/dev/null || exit 91
+fi
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -106,13 +145,15 @@ DRY_RUN="${DRY_RUN:-0}"
 OMNI_LOG_FILE="${OMNI_LOG_FILE:-}"
 OMNI_RUNDIR="${OMNI_RUNDIR:-}"
 OMNI_ENV_FORMAT="${OMNI_ENV_FORMAT:-auto}"   # auto | space | equals
+OMNI_PIPE_STATUS_DIR="${OMNI_PIPE_STATUS_DIR:-}"
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
 if [ -t 2 ] && [ -z "${OMNI_NO_COLOUR:-}" ]; then
-    _C_RED=$'\033[1;31m'; _C_YEL=$'\033[1;33m'; _C_GRN=$'\033[1;32m'
-    _C_BLU=$'\033[1;34m'; _C_DIM=$'\033[2m';    _C_OFF=$'\033[0m'
+    _C_ESC=$(printf '\033')
+    _C_RED="$_C_ESC[1;31m"; _C_YEL="$_C_ESC[1;33m"; _C_GRN="$_C_ESC[1;32m"
+    _C_BLU="$_C_ESC[1;34m"; _C_DIM="$_C_ESC[2m";    _C_OFF="$_C_ESC[0m"
 else
     _C_RED=''; _C_YEL=''; _C_GRN=''; _C_BLU=''; _C_DIM=''; _C_OFF=''
 fi
@@ -246,6 +287,83 @@ omni_rundir_cleanup() {
         *) warn "refusing to remove unexpected scratch dir $OMNI_RUNDIR" ;;
     esac
     OMNI_RUNDIR=""
+    OMNI_PIPE_STATUS_DIR=""
+}
+
+# ---------------------------------------------------------------------------
+# Pipeline exit status - the POSIX replacement for bash's ${PIPESTATUS[*]}
+# ---------------------------------------------------------------------------
+# THIS IS TRUNCATION DETECTION, NOT COSMETICS.  A `curl | gzip -dc | dd` write
+# whose FIRST stage was cut short still ends with dd exiting 0; the only thing
+# that reports the short read is the source stage's own status.  It is one of
+# three independent guards (the others are dd's byte count and a sha256 over
+# exactly IMG_SIZE bytes read back from the device) and all three must stay.
+#
+# bash:
+#     a | b | c
+#     RC="${PIPESTATUS[*]}"                 # -> "0 0 0"
+#
+# POSIX (every stage of a pipeline runs in its own subshell, so a status cannot
+# be handed back in a variable - each stage writes its own to a file instead):
+#     pipe_status_reset
+#     { a; pipe_status_mark 1; } | { b; pipe_status_mark 2; } | { c; pipe_status_mark 3; }
+#     RC=$(pipe_status_string 3)            # -> "0 0 0", same format as bash
+#
+# Rules:
+#   * pipe_status_mark N must be the FIRST command after the stage's command,
+#     inside that stage's braces.  It captures $? and re-returns it unchanged,
+#     so the pipeline's own exit status is not disturbed.
+#   * Number the stages left to right from 1 so the string reads like
+#     ${PIPESTATUS[*]} did and existing `case "$RC" in "0 0 0")` tests still work.
+#   * A stage that never reached its mark (killed by a signal, exec failure)
+#     reports '?', which fails those tests exactly like a non-zero code does.
+#   * The whole pipeline works inside $( ), because the statuses go through
+#     files rather than through the subshell's variables.
+pipe_status_reset() {
+    # Start a new record.  Call once, immediately before the pipeline.
+    local d
+    d="$(omni_rundir)/pipestatus"
+    mkdir -p -- "$d" || die "cannot create pipeline status directory $d"
+    rm -f -- "$d"/stage.* 2>/dev/null || true
+    OMNI_PIPE_STATUS_DIR="$d"
+}
+
+pipe_status_mark() {
+    # pipe_status_mark <stage-number>.  MUST capture $? before anything else.
+    __omni_ps_rc=$?
+    if [ -n "${OMNI_PIPE_STATUS_DIR:-}" ]; then
+        printf '%s\n' "$__omni_ps_rc" > "$OMNI_PIPE_STATUS_DIR/stage.$1" 2>/dev/null || true
+    fi
+    return "$__omni_ps_rc"
+}
+
+pipe_status_string() {
+    # pipe_status_string <stage-count> -> "0 0 0" (bash's ${PIPESTATUS[*]} format)
+    local n="$1" i=1 out="" v f
+    while [ "$i" -le "$n" ]; do
+        v='?'
+        f="${OMNI_PIPE_STATUS_DIR:-}/stage.$i"
+        if [ -n "${OMNI_PIPE_STATUS_DIR:-}" ] && [ -r "$f" ]; then
+            read -r v < "$f" || v='?'
+            case "$v" in ''|*[!0-9]*) v='?' ;; esac
+        fi
+        if [ -z "$out" ]; then out="$v"; else out="$out $v"; fi
+        i=$((i + 1))
+    done
+    printf '%s' "$out"
+}
+
+pipe_status_ok() {
+    # pipe_status_ok <stage-count> - true only when every stage recorded 0.
+    local n="$1" i=1 v f
+    while [ "$i" -le "$n" ]; do
+        f="${OMNI_PIPE_STATUS_DIR:-}/stage.$i"
+        [ -n "${OMNI_PIPE_STATUS_DIR:-}" ] && [ -r "$f" ] || return 1
+        read -r v < "$f" || return 1
+        [ "$v" = "0" ] || return 1
+        i=$((i + 1))
+    done
+    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -396,7 +514,7 @@ running_slot() {
     d=$(running_root_dev) || return 1
     case "$d" in
         "$OMNI_PART_PREFIX"*)
-            n="${d#$OMNI_PART_PREFIX}"
+            n="${d#"$OMNI_PART_PREFIX"}"
             case "$n" in
                 ''|*[!0-9]*) return 1 ;;
                 *) printf '%s' "$n"; return 0 ;;
@@ -556,10 +674,59 @@ _env_validate_pair() {
         [0-9]*) die "refusing to write env variable whose name starts with a digit: '$name'" ;;
     esac
     case "$value" in
-        *"="*)   die "refusing to write env value containing '=' ($name=$value) - not representable in both fw_setenv batch dialects" ;;
-        *$'\t'*) die "refusing to write env value containing a tab ($name)" ;;
-        *$'\n'*) die "refusing to write env value containing a newline ($name)" ;;
+        *"="*)          die "refusing to write env value containing '=' ($name=$value) - not representable in both fw_setenv batch dialects" ;;
+        *"$_OMNI_TAB"*) die "refusing to write env value containing a tab ($name)" ;;
+        *"$_OMNI_NL"*)  die "refusing to write env value containing a newline ($name)" ;;
     esac
+}
+
+# --- NAME VALUE pair lists without arrays ----------------------------------
+# env_batch_write needs THREE passes over the same pair list (validate, emit,
+# assert) and this shell has no arrays.  The POSIX answer is to keep the list in
+# the positional parameters and give each pass its own helper function: passing
+# "$@" to a helper hands it a private copy that it may `shift` to destruction,
+# while the caller's "$@" - the authoritative list - is untouched.  Values are
+# never round-tripped through a variable or a file, so spaces, leading/trailing
+# whitespace and shell metacharacters survive byte-for-byte.
+
+_env_validate_pairs() {
+    # _env_validate_pairs NAME VALUE [NAME VALUE ...]
+    # Validates EVERY pair.  Writes nothing, opens no window; dies on the first
+    # bad pair.  This must complete before force_ro is ever set to 0.
+    while [ $# -gt 0 ]; do
+        _env_validate_pair "$1" "$2"
+        shift 2
+    done
+}
+
+_env_emit_pairs() {
+    # _env_emit_pairs FILE SEP NAME VALUE [NAME VALUE ...]
+    local file="$1" sep="$2"
+    shift 2
+    while [ $# -gt 0 ]; do
+        printf '%s%s%s\n' "$1" "$sep" "$2" >> "$file" || die "cannot write $file"
+        shift 2
+    done
+}
+
+_env_readback_pairs() {
+    # _env_readback_pairs NAME VALUE [NAME VALUE ...]
+    # Re-reads every NAME from the STORED env and compares.  Sets
+    # _ENV_READBACK_BAD to the number of mismatches; always returns 0 so the
+    # caller can report the count rather than just a boolean.
+    local got
+    _ENV_READBACK_BAD=0
+    while [ $# -gt 0 ]; do
+        got=$(env_get "$1" || printf '<undefined>')
+        if [ "$got" = "$2" ]; then
+            ok "readback $1 = $got"
+        else
+            err "readback MISMATCH $1: wanted '$2', got '$got'"
+            _ENV_READBACK_BAD=$(( _ENV_READBACK_BAD + 1 ))
+        fi
+        shift 2
+    done
+    return 0
 }
 
 _force_ro() {
@@ -604,12 +771,16 @@ env_batch_write() {
     #
     # ONE batched fw_setenv -s call, bracketed by the force_ro dance, followed
     # by sync + drop_caches + a read-back assertion on every pair.
+    #
+    # The pair list lives in THIS function's "$@" from start to finish; each of
+    # the three passes over it is a helper that shifts its own copy (see the
+    # comment above _env_validate_pairs).  Nothing here may consume "$@".
     [ $# -ge 2 ] || die "env_batch_write: need at least one NAME VALUE pair"
     [ $(( $# % 2 )) -eq 0 ] || die "env_batch_write: odd number of arguments"
 
     env_need_tools
 
-    local fmt sep file rc i
+    local fmt sep file rc bad line
     fmt=$(_env_format)
     case "$fmt" in
         space)  sep=' ' ;;
@@ -617,29 +788,17 @@ env_batch_write() {
         *) die "unknown env batch format '$fmt' (set OMNI_ENV_FORMAT=space|equals)" ;;
     esac
 
-    # Validate everything before opening the write window.
-    local -a pairs
-    pairs=()
-    i=1
-    while [ $# -gt 0 ]; do
-        _env_validate_pair "$1" "$2"
-        pairs[$i]="$1"; i=$((i + 1))
-        pairs[$i]="$2"; i=$((i + 1))
-        shift 2
-    done
+    # Pass 1 - validate everything before opening the write window.
+    _env_validate_pairs "$@"
 
     file="$(omni_rundir)/env-batch.txt"
     : > "$file" || die "cannot create $file"
     chmod 0600 "$file" 2>/dev/null || true
-    i=1
-    while [ $i -lt ${#pairs[@]} ]; do
-        printf '%s%s%s\n' "${pairs[$i]}" "$sep" "${pairs[$((i+1))]}" >> "$file"
-        i=$((i + 2))
-    done
+    # Pass 2 - render the batch file in the detected dialect.
+    _env_emit_pairs "$file" "$sep" "$@"
 
     banner "U-Boot environment write (batched, ${fmt} dialect)"
     log "batch file $file:"
-    local line
     while read -r line; do log "    $line"; done < "$file"
     log "NOTE: batching makes OUR write a single 8 KB rewrite.  It cannot make"
     log "      U-Boot's own bootcount env_save() atomic (CONFIG_BOOTCOUNT_ENV=y),"
@@ -676,19 +835,9 @@ env_batch_write() {
 
     env_flush_and_reread
 
-    # Read-back assertion.
-    local bad=0 got
-    i=1
-    while [ $i -lt ${#pairs[@]} ]; do
-        got=$(env_get "${pairs[$i]}" || printf '<undefined>')
-        if [ "$got" = "${pairs[$((i+1))]}" ]; then
-            ok "readback ${pairs[$i]} = $got"
-        else
-            err "readback MISMATCH ${pairs[$i]}: wanted '${pairs[$((i+1))]}', got '$got'"
-            bad=$((bad + 1))
-        fi
-        i=$((i + 2))
-    done
+    # Pass 3 - read-back assertion.
+    _env_readback_pairs "$@"
+    bad="$_ENV_READBACK_BAD"
     rm -f -- "$file" 2>/dev/null || true
 
     if [ "$bad" -ne 0 ]; then
@@ -876,8 +1025,10 @@ reboot_now() {
 }
 
 omni_lib_self_test() {
-    # Pure-function tests.  Touches no hardware, writes nothing.
-    local fails=0
+    # Pure-function tests.  Touches no hardware and no block device; the
+    # pipeline-status cases create a private scratch dir and remove it again.
+    local fails=0 ps_saved
+    ps_saved="$OMNI_RUNDIR"
     _t() { # _t <desc> <expected> <actual>
         if [ "$2" = "$3" ]; then printf 'ok    %s\n' "$1"
         else printf 'FAIL  %s (expected "%s", got "%s")\n' "$1" "$2" "$3"; fails=$((fails + 1)); fi
@@ -898,6 +1049,60 @@ omni_lib_self_test() {
     fi
     if is_valid_slot 7; then printf 'FAIL  is_valid_slot 7\n'; fails=$((fails + 1)); else printf 'ok    is_valid_slot 7 false\n'; fi
     _t "human_bytes 1048576" "1 MiB" "$(human_bytes 1048576)"
+
+    # --- POSIX porting machinery -------------------------------------------
+    # The $'\t' / $'\n' replacements: an empty constant would make
+    # _env_validate_pair reject every value, so assert their length.
+    _t "tab constant length"     "1" "${#_OMNI_TAB}"
+    _t "newline constant length" "1" "${#_OMNI_NL}"
+
+    # The PIPESTATUS replacement.  `|| true` keeps a deliberately failing
+    # pipeline from tripping set -e on shells where pipefail is available.
+    pipe_status_reset
+    { printf 'abc\n'; pipe_status_mark 1; } \
+        | { cat; pipe_status_mark 2; } \
+        | { cat >/dev/null; pipe_status_mark 3; } || true
+    _t "pipe_status all clean"   "0 0 0" "$(pipe_status_string 3)"
+    if pipe_status_ok 3; then printf 'ok    pipe_status_ok true when clean\n'
+    else printf 'FAIL  pipe_status_ok true when clean\n'; fails=$((fails + 1)); fi
+
+    # A first-stage failure with a clean dd at the end: the case PIPESTATUS
+    # existed for.  No data crosses the pipe, so there is no SIGPIPE race.
+    pipe_status_reset
+    { sh -c 'exit 1'; pipe_status_mark 1; } \
+        | { cat; pipe_status_mark 2; } \
+        | { cat >/dev/null; pipe_status_mark 3; } || true
+    _t "pipe_status source failed" "1 0 0" "$(pipe_status_string 3)"
+    if pipe_status_ok 3; then printf 'FAIL  pipe_status_ok false when stage 1 failed\n'; fails=$((fails + 1))
+    else printf 'ok    pipe_status_ok false when stage 1 failed\n'; fi
+
+    pipe_status_reset
+    { true; pipe_status_mark 1; } \
+        | { sh -c 'exit 3'; pipe_status_mark 2; } \
+        | { true; pipe_status_mark 3; } || true
+    _t "pipe_status middle failed" "0 3 0" "$(pipe_status_string 3)"
+
+    # An unmarked stage must read as '?', which fails every "0 0 0" test.
+    pipe_status_reset
+    _t "pipe_status unmarked"      "? ?"   "$(pipe_status_string 2)"
+
+    # Pair-list passes must not consume the caller's "$@" and must preserve
+    # values containing spaces.
+    _env_validate_pairs bootcount 0 upgrade_available 1 x "a b  c"
+    printf 'ok    _env_validate_pairs accepts a valid list\n'
+    local pf
+    pf="$(omni_rundir)/self-test-pairs.txt"
+    : > "$pf"
+    _env_emit_pairs "$pf" ' ' bootcount 0 x "a b  c"
+    _t "_env_emit_pairs line 1" "bootcount 0"  "$(sed -n 1p "$pf")"
+    _t "_env_emit_pairs line 2" "x a b  c"     "$(sed -n 2p "$pf")"
+    rm -f -- "$pf" 2>/dev/null || true
+
+    if [ "$OMNI_RUNDIR" != "$ps_saved" ]; then
+        omni_rundir_cleanup
+        OMNI_RUNDIR="$ps_saved"
+    fi
+
     printf '\n'
     if [ "$fails" -eq 0 ]; then printf 'omni-lib self-test: ALL PASS\n'; return 0
     else printf 'omni-lib self-test: %d FAILURE(S)\n' "$fails"; return 1; fi
@@ -928,6 +1133,9 @@ What it provides
   filesystems      assert_looks_like_ext4 (dumpe2fs, else raw 0xEF53 magic)
   environment      env_get, env_defined, env_get_required, env_batch_write,
                    env_show_ab_state, env_assert_config_sane
+  pipelines        pipe_status_reset/_mark/_string/_ok - the POSIX replacement
+                   for bash's ${PIPESTATUS[*]}, which /bin/sh on the device
+                   (zsh) does not have.  Truncation detection depends on it.
 
 Environment-write contract enforced by env_batch_write()
   1. validate every NAME/VALUE pair before opening any window
@@ -976,9 +1184,22 @@ _omni_lib_main() {
     esac
 }
 
-# Only run main when executed, not when sourced.  BASH_SOURCE is bash 3.x safe.
-if [ "${BASH_SOURCE[0]}" = "$0" ]; then
-    set -euo pipefail
-    _omni_lib_main "$@"
-    exit $?
+# Only run main when executed, not when sourced.  POSIX sh has no BASH_SOURCE
+# and no portable "was I sourced?" test, but every shell agrees on $0: a sourced
+# dot-script leaves $0 as the CALLING script's name, while an executed one sets
+# it to this file.  So compare $0's basename with ours.  A wrapper that really
+# is called omni-lib.sh can set OMNI_LIB_NO_MAIN=1 to suppress this.
+if [ -z "${OMNI_LIB_NO_MAIN:-}" ]; then
+    case "${0##*/}" in
+        omni-lib.sh|omni-lib)
+            # pipefail is NOT POSIX and dash does not have it; keep it where the
+            # shell supports it (bash, zsh-as-sh, busybox ash) and carry on
+            # without it where it does not.  The pipe_status_* helpers, not
+            # pipefail, are what the safety checks actually rely on.
+            set -eu
+            if ( set -o pipefail ) 2>/dev/null; then set -o pipefail; fi
+            _omni_lib_main "$@"
+            exit $?
+            ;;
+    esac
 fi

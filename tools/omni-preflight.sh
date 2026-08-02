@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 #
 # omni-preflight.sh - Phase 0 inventory and gate evaluation for the Avast Omni.
 #
@@ -11,7 +11,15 @@
 # It writes NOTHING to the U-Boot environment, NOTHING to any partition, and
 # nothing at all outside the report directory.
 #
-set -euo pipefail
+# POSIX sh, not bash: the stock Yocto image has no bash at all and /bin/sh is
+# zsh.  See the porting rationale and the list of banned constructs at the top
+# of omni-lib.sh; it is not repeated here.
+#
+set -eu
+# pipefail is not POSIX and dash does not have it.  Enable it only where the
+# shell supports it; the pipe_status_* helpers, not pipefail, are what the
+# safety checks rely on.
+if ( set -o pipefail ) 2>/dev/null; then set -o pipefail; fi
 
 OMNI_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 # shellcheck source=omni-lib.sh
@@ -31,7 +39,9 @@ WHAT IT COLLECTS  (one file per item, in <outdir>/<timestamp>/)
   blockdev-sizes.txt     blockdev --getsize64 for the disk and every partition
   sfdisk-dump.txt        sfdisk -d /dev/mmcblk0          (the partition table)
   fw_printenv.txt        fw_printenv | sort              (only surviving ethaddr)
-  dumpe2fs-pN.txt        dumpe2fs -h for p1 p2 p3 p5 p6 p7
+  dumpe2fs-pN.txt        dumpe2fs -h for p1 p2 p3 p5 p6 p7, or - when dumpe2fs
+                         is not installed, which is the stock image's case - the
+                         read-only fallback probe (e2fsck -n, then raw 0xEF53)
   mmc-ios.txt            /sys/kernel/debug/mmc0/ios      (timing spec, clock, width)
   mmc-ext_csd.txt        raw ext_csd, plus a decoded pre_eol_info / life_time_est
   proc-cmdline.txt       /proc/cmdline
@@ -47,13 +57,19 @@ WHAT IT COLLECTS  (one file per item, in <outdir>/<timestamp>/)
 GATES EVALUATED AUTOMATICALLY
   P1  force_run_mfc AND force_run_eol both 0.  Undefined counts as FAIL: the
       compiled defaults are 1, and APOLLO_CHECK_MFC forces p7 ahead of A/B.
-  P2  no stored 'bootargs'.  Defined = FAIL (last root= wins, so a stale
-      bootargs boots one slot's kernel against the other slot's rootfs).
+  P2  the stored 'bootargs' contains no "root=".  A stored bootargs is NOT by
+      itself a failure - a healthy unit has bootargs="rootwait rw
+      console=ttyAML0" (patch 0039's fixed common cmdline) and MENDER_BOOTARGS
+      prepends root=${mender_kernel_root} at boot.  A root= INSIDE the stored
+      value is the failure: the LAST root= wins, so it would boot one slot's
+      kernel against the other slot's rootfs.
   P3  ethaddr defined and non-empty.  check_env is dead code, so a lost ethaddr
       is lost forever and CONFIG_NET_RANDOM_ETHADDR gives a new MAC every boot.
   P4  the three mender_*_name values captured verbatim.
   P8  p2 carries a valid ext2/3/4 superblock (slot B has never been booted -
-      nothing ever set upgrade_available=1 - so it may be zeros).
+      nothing ever set upgrade_available=1 - so it may be zeros).  Validated
+      with dumpe2fs where it exists, otherwise a read-only 'e2fsck -n', and as
+      a last resort the raw ext4 magic at offset 0x438.
   Plus informational checks: is altbootcmd/bootlimit/bootcount in the STORED
   env, is check_watchdog armed, what is bootdelay, is p7 populated.
 
@@ -166,6 +182,103 @@ capture_file() {
     return 0
 }
 
+# --- filesystem superblock probe -------------------------------------------
+# The stock image ships e2fsprogs-mke2fs and e2fsck but NOT dumpe2fs (see
+# docs/HARDWARE-MEASURED.md), so every dumpe2fs call in this script is guarded
+# and the run degrades one rung at a time instead of aborting:
+#
+#     dumpe2fs -h    best: label, block count, features, last mount time
+#  -> e2fsck -n      present on the stock image; -n NEVER writes, and it is
+#                    only run on an UNMOUNTED device
+#  -> ext4_magic_ok  raw 0xEF53 at offset 0x438 via dd+od (omni-lib.sh)
+#
+# The rungs below dumpe2fs are used ONLY when dumpe2fs is absent, so a unit that
+# HAS dumpe2fs keeps exactly the old pass/fail semantics.
+#
+# Results are cached per device under the run directory, so the read-only fsck
+# runs at most once per partition even though the inventory loop and the gate
+# section both ask.
+#
+# Sets FS_PROBE_STATE and FS_PROBE_DETAIL and ALWAYS returns 0 (the same
+# well-known-global convention omni-lib.sh uses for _ENV_READBACK_BAD), so
+# `set -e` can never fire on a probe result.
+#
+#   FS_PROBE_STATE = nodev     - not a block device
+#                    validated - a real superblock reader confirmed it
+#                    magic     - 0xEF53 present, but nothing validated it
+#                    bad       - no readable ext2/3/4 superblock
+FS_PROBE_STATE=""
+FS_PROBE_DETAIL=""
+fs_probe() {
+    local dev="$1" cache raw out rc
+    FS_PROBE_STATE="bad"
+    FS_PROBE_DETAIL=""
+
+    cache="$(omni_rundir)/fsprobe.${dev##*/}"
+    raw="$cache.raw"
+    if [ -r "$cache" ]; then
+        {   IFS= read -r FS_PROBE_STATE  || FS_PROBE_STATE="bad"
+            IFS= read -r FS_PROBE_DETAIL || FS_PROBE_DETAIL=""
+        } < "$cache"
+        return 0
+    fi
+
+    if [ ! -b "$dev" ]; then
+        FS_PROBE_STATE="nodev"
+        FS_PROBE_DETAIL="$dev is not a block device"
+    elif have_cmd dumpe2fs; then
+        set +e
+        out=$(dumpe2fs -h "$dev" 2>&1)
+        rc=$?
+        set -e
+        printf '%s\n' "$out" > "$raw" 2>/dev/null || true
+        if [ "$rc" -eq 0 ]; then
+            FS_PROBE_STATE="validated"
+            FS_PROBE_DETAIL=$(printf '%s\n' "$out" | awk -F': *' '
+                /^Filesystem volume name/ {vol=$2}
+                /^Filesystem features/    {feat=$2}
+                /^Block count/            {bc=$2}
+                /^Last mount time/        {lmt=$2}
+                END {printf "label=%s blocks=%s last_mount=%s feats=[%s]", (vol==""?"<none>":vol), bc, (lmt==""?"?":lmt), feat}')
+        else
+            FS_PROBE_DETAIL="dumpe2fs -h could not read a superblock (exit $rc)"
+        fi
+    elif have_cmd e2fsck && ! is_mounted "$dev"; then
+        # -n answers "no" to every question, so this cannot write.  On a large
+        # dirty filesystem it degenerates into a full read-only check, which is
+        # slow but harmless.
+        log "dumpe2fs is not installed; validating $dev with a read-only 'e2fsck -n' (this can take a minute)"
+        set +e
+        out=$(e2fsck -n "$dev" 2>&1)
+        rc=$?
+        set -e
+        printf '%s\n' "$out" > "$raw" 2>/dev/null || true
+        if [ "$rc" -eq 0 ]; then
+            FS_PROBE_STATE="validated"
+            FS_PROBE_DETAIL="e2fsck -n: $(printf '%s\n' "$out" | tail -n 1)"
+        else
+            FS_PROBE_DETAIL="e2fsck -n exited $rc"
+        fi
+    fi
+
+    # Last rung, and the fall-through from a failed e2fsck.  Only reachable when
+    # dumpe2fs is absent, so a unit that has dumpe2fs never downgrades to magic.
+    if [ "$FS_PROBE_STATE" = "bad" ] && [ -b "$dev" ] && ! have_cmd dumpe2fs; then
+        if ext4_magic_ok "$dev"; then
+            FS_PROBE_STATE="magic"
+            FS_PROBE_DETAIL="ext4 magic 0xEF53 present at offset 0x438, not validated${FS_PROBE_DETAIL:+ ($FS_PROBE_DETAIL)}"
+        else
+            FS_PROBE_DETAIL="no ext4 magic at offset 0x438${FS_PROBE_DETAIL:+ ($FS_PROBE_DETAIL)}"
+        fi
+    fi
+
+    # The cache is one line of state plus one line of detail, so keep the detail
+    # on a single line.
+    FS_PROBE_DETAIL=$(printf '%s' "$FS_PROBE_DETAIL" | tr "$_OMNI_NL" ' ')
+    printf '%s\n%s\n' "$FS_PROBE_STATE" "$FS_PROBE_DETAIL" > "$cache" 2>/dev/null || true
+    return 0
+}
+
 # --- results table ---------------------------------------------------------
 RESULT_LINES_FILE=""
 FAIL_COUNT=0
@@ -255,13 +368,17 @@ for p in 1 2 3 5 6 7; do
         capture "dumpe2fs-p$p.txt" "dumpe2fs -h $d" dumpe2fs -h "$d"
     else
         if [ "$DRY_RUN" != "1" ]; then
+            log "collecting superblock probe for $d (dumpe2fs is not installed)"
+            fs_probe "$d"
             {
                 printf '### dumpe2fs is not installed on this image\n'
-                printf '### fallback: raw ext4 superblock magic (0xEF53 at offset 0x438) on %s\n\n' "$d"
-                if [ -b "$d" ]; then
-                    if ext4_magic_ok "$d"; then printf 'ext4 magic: PRESENT\n'; else printf 'ext4 magic: ABSENT\n'; fi
-                else
-                    printf '(%s is not a block device)\n' "$d"
+                printf '### read-only fallback probe on %s: e2fsck -n when the device is\n' "$d"
+                printf '### unmounted, then the raw ext4 superblock magic (0xEF53 at 0x438)\n\n'
+                printf 'state:  %s\n' "$FS_PROBE_STATE"
+                printf 'detail: %s\n' "$FS_PROBE_DETAIL"
+                if [ -r "$(omni_rundir)/fsprobe.${d##*/}.raw" ]; then
+                    printf '\n### probe output\n'
+                    cat "$(omni_rundir)/fsprobe.${d##*/}.raw"
                 fi
             } > "$REPORT/dumpe2fs-p$p.txt"
         fi
@@ -298,9 +415,12 @@ if [ -n "$EXT_CSD_SRC" ] && [ "$DRY_RUN" != "1" ]; then
     log "collecting ext_csd and decoding wear counters"
     RAW=$(cat "$EXT_CSD_SRC" 2>/dev/null | tr -d ' \n' || printf '')
     decode_ext_csd_byte() {
-        # decode_ext_csd_byte <index> -> two hex chars
-        local idx="$1" off=$(( $1 * 2 ))
-        printf '%s' "${RAW:$off:2}"
+        # decode_ext_csd_byte <index> -> two hex chars.
+        # bash's ${RAW:off:2} substring expansion has no POSIX equivalent;
+        # awk substr() is exact, and awk is on the stock image.
+        local off
+        off=$(( $1 * 2 ))
+        printf '%s' "$RAW" | awk -v o="$off" '{ printf "%s", substr($0, o + 1, 2) }'
     }
     PRE_EOL=$(decode_ext_csd_byte 267)
     LIFE_A=$(decode_ext_csd_byte 268)
@@ -367,15 +487,34 @@ else
     record P1 MANUAL "fw_printenv missing - check force_run_mfc / force_run_eol by hand"
 fi
 
-# --- P2 --------------------------------------------------------------------
+# --- P2 (RESTATED) ---------------------------------------------------------
+# The original gate ("no stored bootargs at all") fails on a healthy unit: the
+# measured device stores patch 0039's fixed common cmdline,
+# bootargs="rootwait rw console=ttyAML0", which carries no root=.  Every boot
+# MENDER_BOOTARGS does  setenv bootargs root=${mender_kernel_root} ${bootargs},
+# so the real invariant is that the STORED value contains no root= of its own -
+# the last root= wins, and a stored one would boot a slot's kernel against the
+# other slot's rootfs.  See docs/HARDWARE-MEASURED.md, "Why P2 needs restating".
 if [ "$ENV_OK" = "1" ]; then
     if env_defined bootargs; then
-        record P2 FAIL "a stored 'bootargs' exists: '$(env_get bootargs)'. MENDER_BOOTARGS prepends root=\${mender_kernel_root}; the LAST root= wins, so this can boot one slot's kernel against the other slot's rootfs"
+        BA=$(env_get bootargs 2>/dev/null || printf '')
+        # Match root= only on a token boundary, so "rootwait", "rootfstype=" and
+        # "mender_kernel_root=" are not mistaken for it.  Tabs count as
+        # separators too, hence the tr.
+        BA_TOK=" $(printf '%s' "$BA" | tr "$_OMNI_TAB" ' ')"
+        case "$BA_TOK" in
+            *" root="*)
+                record P2 FAIL "the stored 'bootargs' contains a root= assignment: '$BA'. MENDER_BOOTARGS prepends root=\${mender_kernel_root}; the LAST root= wins, so this can boot one slot's kernel against the other slot's rootfs"
+                ;;
+            *)
+                record P2 PASS "the stored 'bootargs' contains no root= ('$BA') - MENDER_BOOTARGS prepends root=\${mender_kernel_root} at boot"
+                ;;
+        esac
     else
         record P2 PASS "no stored 'bootargs'"
     fi
 else
-    record P2 MANUAL "fw_printenv missing - check 'fw_printenv bootargs' by hand"
+    record P2 MANUAL "fw_printenv missing - check 'fw_printenv bootargs' by hand; it must contain no root="
 fi
 
 # --- P3 --------------------------------------------------------------------
@@ -437,27 +576,25 @@ fi
 
 # --- P8 --------------------------------------------------------------------
 P2DEV="$OMNI_PART_PREFIX$OMNI_SLOT_B"
-if [ ! -b "$P2DEV" ]; then
-    record P8 FAIL "$P2DEV does not exist"
-elif have_cmd dumpe2fs; then
-    if dumpe2fs -h "$P2DEV" >/dev/null 2>&1; then
-        P8DETAIL=$(dumpe2fs -h "$P2DEV" 2>/dev/null | awk -F': *' '
-            /^Filesystem volume name/ {vol=$2}
-            /^Filesystem features/    {feat=$2}
-            /^Block count/            {bc=$2}
-            /^Last mount time/        {lmt=$2}
-            END {printf "label=%s blocks=%s last_mount=%s feats=[%s]", (vol==""?"<none>":vol), bc, (lmt==""?"?":lmt), feat}')
-        record P8 PASS "$P2DEV holds a readable ext superblock: $P8DETAIL"
-    else
-        record P8 FAIL "$P2DEV has no readable ext2/3/4 superblock. Nothing ever set upgrade_available=1 on this unit (no mender daemon is installed), so slot B has very likely never been written - it may be zeros"
-    fi
-else
-    if ext4_magic_ok "$P2DEV"; then
+fs_probe "$P2DEV"
+case "$FS_PROBE_STATE" in
+    nodev)
+        record P8 FAIL "$P2DEV does not exist"
+        ;;
+    validated)
+        record P8 PASS "$P2DEV holds a readable ext superblock: $FS_PROBE_DETAIL"
+        ;;
+    magic)
         record P8 WARN "$P2DEV has the ext4 magic at 0x438, but dumpe2fs is not installed so the superblock was not validated. Install e2fsprogs-dumpe2fs and re-run"
-    else
-        record P8 FAIL "$P2DEV has no ext4 magic at offset 0x438 - slot B looks empty/zeroed"
-    fi
-fi
+        ;;
+    *)
+        if have_cmd dumpe2fs; then
+            record P8 FAIL "$P2DEV has no readable ext2/3/4 superblock. Nothing ever set upgrade_available=1 on this unit (no mender daemon is installed), so slot B has very likely never been written - it may be zeros"
+        else
+            record P8 FAIL "$P2DEV has no ext4 magic at offset 0x438 - slot B looks empty/zeroed"
+        fi
+        ;;
+esac
 
 # --- informational env checks ---------------------------------------------
 if [ "$ENV_OK" = "1" ]; then
@@ -510,15 +647,21 @@ fi
 
 # --- is p7 populated? ------------------------------------------------------
 P7DEV="$OMNI_PART_PREFIX$OMNI_RECOVERY_PART"
-if [ ! -b "$P7DEV" ]; then
-    record I10 FAIL "$P7DEV does not exist - recovery ladder rank 2 and 3 are both unavailable"
-elif have_cmd dumpe2fs && dumpe2fs -h "$P7DEV" >/dev/null 2>&1; then
-    record I10 PASS "$P7DEV holds a readable ext superblock (see dumpe2fs-p7.txt). Whether it BOOTS is P6 - manual"
-elif ext4_magic_ok "$P7DEV"; then
-    record I10 WARN "$P7DEV has the ext4 magic but was not validated (no dumpe2fs). Whether it BOOTS is P6 - manual"
-else
-    record I10 FAIL "$P7DEV has no ext4 magic. Nothing in this repo builds p7 or apollo-mfc-initrd-image-*. If p7 is empty, recovery is serial-only: populate it with a copy of p1 before proceeding (pre-flight P6)"
-fi
+fs_probe "$P7DEV"
+case "$FS_PROBE_STATE" in
+    nodev)
+        record I10 FAIL "$P7DEV does not exist - recovery ladder rank 2 and 3 are both unavailable"
+        ;;
+    validated)
+        record I10 PASS "$P7DEV holds a readable ext superblock (see dumpe2fs-p7.txt). Whether it BOOTS is P6 - manual"
+        ;;
+    magic)
+        record I10 WARN "$P7DEV has the ext4 magic but was not validated (no dumpe2fs). Whether it BOOTS is P6 - manual"
+        ;;
+    *)
+        record I10 FAIL "$P7DEV has no ext4 magic. Nothing in this repo builds p7 or apollo-mfc-initrd-image-*. If p7 is empty, recovery is serial-only: populate it with a copy of p1 before proceeding (pre-flight P6)"
+        ;;
+esac
 
 # --- 0xff80023c, best effort ----------------------------------------------
 if have_cmd devmem; then
@@ -540,7 +683,7 @@ SUMMARY="$REPORT/SUMMARY.txt"
     printf '%-5s %-7s %s\n' "ID" "STATUS" "DETAIL"
     printf '%s\n' "---------------------------------------------------------------------------"
     if [ -n "$RESULT_LINES_FILE" ] && [ -r "$RESULT_LINES_FILE" ]; then
-        while IFS=$'\t' read -r id status detail; do
+        while IFS="$_OMNI_TAB" read -r id status detail; do
             printf '%-5s %-7s %s\n' "$id" "$status" "$detail"
         done < "$RESULT_LINES_FILE"
     fi

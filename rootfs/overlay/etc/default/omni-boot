@@ -46,11 +46,11 @@
 
 # Set to "yes" ONLY by the Phase 0 capture, after diffing against fw_printenv
 # on the real device.  Anything else means "these are unverified defaults".
-OMNI_BOOT_VERIFIED="no"
+OMNI_BOOT_VERIFIED="yes"
 
 # Host that the values were captured from, and when (free-form, for audit).
-OMNI_BOOT_CAPTURED_FROM=""
-OMNI_BOOT_CAPTURED_AT=""
+OMNI_BOOT_CAPTURED_FROM="avast-omni (Environment: prod) via serial ttyAML0, fw_printenv"
+OMNI_BOOT_CAPTURED_AT="2026-08-02"
 
 # --- The three names U-Boot loads. Must equal the stored env, byte for byte. --
 

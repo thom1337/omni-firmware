@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 #
 # omni-commit.sh - mark the RUNNING slot good on the Avast Omni.
 #
@@ -7,7 +7,15 @@
 # environment write.  This closes the armed window: from here on a reboot no
 # longer counts against bootlimit and mender_altbootcmd will not flip the slot.
 #
-set -euo pipefail
+# POSIX sh, not bash: the stock Yocto image has no bash at all and /bin/sh is
+# zsh, so a #!/bin/bash script does not start and bash's pipeline-status array
+# does not exist.  See the header of omni-lib.sh for the full rationale and the
+# banned-construct list; it is not repeated here.
+#
+set -eu
+# pipefail is NOT POSIX and dash does not have it: probe, never assume.  Nothing
+# in this script pipes, and no safety decision here rests on it.
+if ( set -o pipefail ) 2>/dev/null; then set -o pipefail; fi
 
 OMNI_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 # shellcheck source=omni-lib.sh
