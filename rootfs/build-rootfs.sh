@@ -36,7 +36,14 @@ LABEL=omni_root
 # never by UUID, so a shared UUID is intentional and keeps the image byte-reproducible.
 FS_UUID=9f8e7d6c-5b4a-4392-8180-a1b2c3d4e5f6
 BLOCK_SIZE=4096
-BLOCKS=262144            # 262144 * 4096 = 1024 MiB — PLACEHOLDER, see the warning below
+# MEASURED ON THE DEVICE 2026-08-02, not a placeholder any more:
+#   /dev/mmcblk0p1 and p2 are 891,289,600 bytes each (lsblk -b), and
+#   891289600 / 4096 = 217600 exactly.
+# The previous default of 262144 blocks (1024 MiB) was LARGER than the slot, so it
+# would have produced an image that cannot be written -- caught only at flash time.
+# SLOT_BYTES below is the hard ceiling asserted before mke2fs runs.
+BLOCKS=217600            # 217600 * 4096 = 850 MiB = exactly one A/B slot
+SLOT_BYTES=891289600     # measured size of p1/p2; see docs/HARDWARE.md
 BLOCKS_EXPLICIT=0
 BLOCKS_FROM=""
 
@@ -388,9 +395,16 @@ fi
 [[ "$BLOCKS" =~ ^[0-9]+$ ]] || die "block count must be an integer: $BLOCKS"
 [ "$BLOCKS" -ge 65536 ] || die "block count ${BLOCKS} ($((BLOCKS/256)) MiB) is implausibly small"
 IMG_BYTES=$(( BLOCKS * BLOCK_SIZE ))
+# Hard ceiling. An image larger than the slot is not a warning, it is an image that
+# physically cannot be written -- and without this the only thing that notices is
+# omni-flash.sh, on the device, after the download. SLOT_BYTES was measured on the
+# unit (docs/HARDWARE.md); override it with --slot-bytes if a different unit differs.
+if [ -n "${SLOT_BYTES:-}" ] && [ "$IMG_BYTES" -gt "$SLOT_BYTES" ]; then
+	die "image would be ${IMG_BYTES} bytes ($((IMG_BYTES/1048576)) MiB) but an A/B slot is only ${SLOT_BYTES} bytes ($((SLOT_BYTES/1048576)) MiB). Lower --blocks (max $((SLOT_BYTES / BLOCK_SIZE)))."
+fi
 if [ "$BLOCKS_EXPLICIT" = 0 ]; then
-	warn "using the DEFAULT block count ${BLOCKS} ($((BLOCKS/256)) MiB). This is a placeholder."
-	warn "The image must be <= the size of p1/p2. Capture it in Phase 0 and pass --blocks-from:"
+	info "using the measured default block count ${BLOCKS} ($((BLOCKS/256)) MiB) = exactly one A/B slot."
+	info "Override with --blocks-from once you have a dumpe2fs of p1 from another unit:"
 	warn "    ssh root@omni 'dumpe2fs -h /dev/mmcblk0p1' > omni-p1-dumpe2fs.txt"
 fi
 

@@ -41,6 +41,32 @@
 # as short as possible and do not power-cycle between arm and commit.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# INTERPRETER GUARD -- read this before "fixing" the shebang to /bin/sh.
+#
+# MEASURED ON THE DEVICE 2026-08-02: the shipping Yocto image has NO bash.
+# /bin/sh is a symlink to /bin/zsh, and zsh's sh-emulation does NOT provide
+# PIPESTATUS (it spells it `pipestatus`). These scripts use PIPESTATUS to tell
+# a truncated download apart from a successful one, and bash arrays in
+# env_batch_write(). Under the device's sh, PIPESTATUS expands to empty, so a
+# check like `case "${PIPESTATUS[*]}" in "0 0 0")` silently takes the failure
+# branch -- fail-safe, but the tool no longer works.
+#
+# So these scripts currently run on the DEBIAN slot (which has bash) and on a
+# workstation, but NOT on the stock Yocto system. Making them usable for Phase 0
+# and Phase 1 on the unmodified device requires a real POSIX rewrite (drop
+# PIPESTATUS in favour of explicit status files, drop arrays). Until that is
+# done, this guard makes the failure obvious instead of subtle.
+# ---------------------------------------------------------------------------
+if [ -z "${BASH_VERSION:-}" ]; then
+    printf 'ERROR: %s requires bash, and this shell is not bash.\n' "${0##*/}" >&2
+    printf '  The stock Omni Yocto image has no bash at all (/bin/sh -> /bin/zsh).\n' >&2
+    printf '  Running these under zsh-as-sh breaks PIPESTATUS-based truncation\n' >&2
+    printf '  detection, so they are refused rather than run half-working.\n' >&2
+    printf '  See docs/HARDWARE.md ("Shell") for the measurement and the plan.\n' >&2
+    exit 90
+fi
+
 # Guard against double-sourcing.
 if [ -n "${OMNI_LIB_LOADED:-}" ]; then
     return 0 2>/dev/null || exit 0
