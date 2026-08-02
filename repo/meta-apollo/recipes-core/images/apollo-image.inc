@@ -32,12 +32,8 @@ IMAGE_INSTALL:append = " \
     openssh-sshd \
     openssh-scp \
     netcat-openbsd \
-    zlib \
-    bash \
     htop \
-    nmap \
     docker-ce \
-    openvpn \
 "
 
 IMAGE_FSTYPES:remove = "wic"
