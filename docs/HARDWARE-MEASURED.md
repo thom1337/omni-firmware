@@ -208,7 +208,43 @@ ssh from a workstation) cannot be used. A full 3.96 GB eMMC image over 115200
 baud is roughly four days, so **the full-eMMC backup in pre-flight step 1 is not
 achievable over serial** — it needs a network cable or the box opened.
 
-### 8. `setexpr` exists on this unit
+### 8. p1's real ext4 feature set — the plan's `mke2fs` rationale is wrong (the line is still safe)
+
+Read directly out of p1's superblock (no `dumpe2fs` on the device):
+
+```
+block size 1024
+compat    0x0000003c  dir_index ext_attr has_journal resize_inode
+incompat  0x000002c6  64bit extent filetype flex_bg recover
+ro_compat 0x0000046b  dir_nlink extra_isize huge_file large_file metadata_csum sparse_super
+
+  64bit         = SET
+  metadata_csum = SET
+  csum_seed     = clear
+  orphan_file   = clear
+```
+
+The plan says to pack the new image with a feature set "derived from the Phase 0
+`dumpe2fs -h /dev/mmcblk0p1` line" and then hardcodes
+
+```
+-O ^64bit,^metadata_csum,^metadata_csum_seed,^orphan_file
+```
+
+But **p1 — the filesystem U-Boot 2018.09 boots today — has `64bit` and
+`metadata_csum` enabled.** So:
+
+* The stated justification is wrong: cloning p1 would mean *enabling* those two.
+* **U-Boot demonstrably reads `64bit` + `metadata_csum` ext4**, which is the real
+  news; the plan feared otherwise.
+* The line itself is still **safe** — disabling features only ever makes a
+  filesystem *more* readable, never less — so it does not need changing. Only
+  `metadata_csum_seed` and `orphan_file` (the two that e2fsprogs 1.47 newly
+  enables by default, and which p1 does not have) are genuinely load-bearing.
+
+Keep the conservative flags; drop the "because p1 has it" reasoning.
+
+### 9. `setexpr` exists on this unit
 
 `button=400` in the stored env was computed by
 `setexpr button *0xff800028 & 0x400`, answering the plan's open question: this
