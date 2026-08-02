@@ -64,6 +64,10 @@ libubootenv-tool
 # package and must be requested explicitly. systemd-networkd itself is inside `systemd`.
 systemd-resolved
 systemd-timesyncd
+# NOTE: ifupdown is Priority:important, so --variant=important installs it. It is NOT
+# deselected here with "ifupdown-": mmdebstrap marks the whole important set held, and
+# apt then refuses with "Held packages were changed". It is purged in the 60-finalise
+# hook instead, which is also where the forbidden-package assertion runs.
 # ip / tc / bridge. tc matters because the Yocto kernel-config patch 0009 stripped the
 # packet schedulers and the plan puts them back.
 iproute2

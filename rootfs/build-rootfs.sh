@@ -412,6 +412,13 @@ case "$WORK_DIR" in
 esac
 mkdir -p "$WORK_DIR"
 WORK_DIR=$(cd -- "$WORK_DIR" && pwd)
+# mmdebstrap --mode=unshare runs its customize-hooks inside a user namespace in
+# which our uid is mapped to a subuid, so a scratch dir owned by the invoking
+# user is NOT writable from a hook. Hook 60 writes packages.installed here, and
+# without this it dies with "Permission denied" after the whole rootfs has been
+# built -- i.e. at the most expensive possible moment. This is build scratch,
+# never shipped, so widening it is safe.
+chmod 0777 "$WORK_DIR" 2>/dev/null || true
 HOOK_DIR="${WORK_DIR}/hooks"
 ROOTDIR="${WORK_DIR}/rootdir"
 TARBALL="${WORK_DIR}/${NAME}.tar"
@@ -828,7 +835,10 @@ if [ ! -e /etc/fstab ]; then
 # Deliberately NO cgroup v1 line: systemd mounts cgroup2 itself, before fstab.
 FSTAB
 fi
-if grep -qE '(^|[[:space:]])/sys/fs/cgroup([[:space:]]|$)' /etc/fstab; then
+# Strip comments before matching. The shipped fstab documents at length WHY the
+# Yocto cgroup-v1 line is absent, and those comments contain the literal path --
+# matching them would fail every build on a file that is in fact correct.
+if sed 's/#.*//' /etc/fstab | grep -qE '(^|[[:space:]])/sys/fs/cgroup([[:space:]]|$)'; then
 	echo "E: 60-finalise: /etc/fstab has a /sys/fs/cgroup entry. systemd >= 256 will not boot on cgroup v1." >&2
 	exit 1
 fi
@@ -840,9 +850,26 @@ fail=0
 for p in /usr/bin/armbian-install /usr/sbin/armbian-install /usr/lib/armbian/armbian-install; do
 	[ -e "$p" ] && { echo "E: 60-finalise: ${p} exists. armbian-bsp leaked in; it REPARTITIONS eMMC." >&2; fail=1; }
 done
+# Purge first, then assert. Some forbidden packages arrive unavoidably: ifupdown is
+# Priority:important, so --variant=important installs it, and deselecting it with
+# "ifupdown-" fails because mmdebstrap marks the important set held ("Held packages were
+# changed"). Purging here is the supported way out. The assertion below is still the
+# safety net -- it fires if a purge did not take, or if a genuinely unexpected package
+# appears.
 for pkg in $OMNI_FORBIDDEN; do
 	if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed'; then
-		echo "E: 60-finalise: forbidden package installed: ${pkg}" >&2
+		echo "I: 60-finalise: purging forbidden package: ${pkg}" >&2
+		# dpkg, not apt-get: apt rewrites /var/lib/apt/lists, and mmdebstrap's own
+		# cleanup step then fails trying to re-run apt-get update against a lists
+		# directory it no longer owns ("List directory .../partial is missing").
+		# These packages have no reverse-dependencies we keep, so dpkg is sufficient.
+		DEBIAN_FRONTEND=noninteractive dpkg --purge --force-depends "$pkg" >/dev/null 2>&1 \
+			|| echo "W: 60-finalise: purge of ${pkg} failed; the assertion below will catch it" >&2
+	fi
+done
+for pkg in $OMNI_FORBIDDEN; do
+	if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q 'install ok installed'; then
+		echo "E: 60-finalise: forbidden package still installed after purge: ${pkg}" >&2
 		fail=1
 	fi
 done
@@ -900,6 +927,13 @@ declare -a MM=(mmdebstrap
 	'--dpkgopt=force-unsafe-io'
 )
 [ "$WITH_RECOMMENDS" = 1 ] || MM+=('--aptopt=Apt::Install-Recommends "false"')
+# Keep apt from dropping privileges to the _apt user. Under --mode=unshare our uid is
+# mapped to a subuid inside the namespace, _apt is not, and apt's chown of
+# /var/lib/apt/lists/partial then fails with EPERM -- which surfaces at the very end,
+# in mmdebstrap's own "cleaning package lists" step, after the entire rootfs has been
+# built. This is the documented workaround and affects only the build sandbox, never
+# the produced image.
+MM+=('--aptopt=APT::Sandbox::User "root"')
 if [ "$SLIM" = 1 ]; then
 	MM+=('--dpkgopt=path-exclude=/usr/share/doc/*'
 	     '--dpkgopt=path-exclude=/usr/share/man/*'
