@@ -283,7 +283,57 @@ Incidental confirmations from the same transcripts: `U-Boot 2018.09 (Sep 10 2018
 and a resumed `boot` loads 27,778 / 10,381,320 / 11,356,329 bytes — byte-exact
 matches for the dtb, kernel and initramfs sizes in `/boot`.
 
-### 10. `setexpr` exists on this unit
+### 10. Phase 1 executed — the A/B contract works exactly as the plan predicted
+
+The first environment writes this device has ever received. Every string the plan
+predicted appeared verbatim.
+
+**Setup.** `tools/omni-{lib,arm,commit,rollback}.sh` pushed over serial with
+`tools/omni-push.py` (30 KB gzip+base64, ~60 chunks, SHA-256 verified *on the
+device* before extraction) into `/data/omni-tools`. They ran unmodified — the
+POSIX port works in anger, on a box with no bash.
+
+**The drill.**
+
+| Step | Result |
+|---|---|
+| `omni-arm.sh --same-slot` | One batched `fw_setenv -s` inside the `force_ro` dance. Read-back asserted all four: `mender_boot_part=1`, `_hex=1`, `bootcount=0`, `upgrade_available=1`. |
+| reboot #1 | Booted p1 normally. **`bootcount=1`** — U-Boot persisted it (`CONFIG_BOOTCOUNT_ENV=y` confirmed live). Pointer unmoved, as `--same-slot` intends. |
+| reboot #2, uncommitted | **`Warning: Bootlimit (1) exceeded. Using altbootcmd.`** — the plan's exact predicted string. |
+| after altbootcmd | `mender_boot_part=2`, `bootcount=2`, `upgrade_available=0`. `mender_altbootcmd` flipped the pointer *and* disarmed, unprompted. |
+| **T9, for free** | Slot B is empty, so the flip tried to boot it: `** File not found /boot/meson-axg-apollo.dtb **`, `** File not found /boot/Image **`, `ERROR: Did not find a cmdline Flattened Device Tree`, then **`=>`**. **A failed load drops to the prompt, it does not hang.** The plan asserted this ("a slot that fails to load is always recoverable"); it is now measured. |
+
+**Recovery**, which also rehearsed the Phase 4 mechanism: from `=>`, three
+`ext4load`s of p1's dtb/kernel/initramfs (27,778 / 10,381,320 / 11,356,329 bytes
+— byte-exact), `setenv bootargs root=/dev/mmcblk0p1 …` (RAM only, **never**
+`saveenv`), `booti` → Linux on p1. Then the pointer was restored from Linux and
+a clean unattended reboot came up on p1 with no warnings.
+
+**`ethaddr` survived all of it** — `00:01:38:2a:bb:5c` before and after. That was
+the single irreplaceable value at risk.
+
+#### Gap this exposed in our own tooling
+
+Both `omni-arm.sh` and `omni-rollback.sh` **refused** the recovery, correctly:
+having booted p1 by hand while the stored pointer still said p2, arm says
+*"target p1 is the RUNNING root filesystem; refusing to arm it as an update
+target"* and rollback says *"a rollback to yourself is not a rollback."* Those
+guards are right for normal operation, but they leave no supported way to do the
+one thing that situation needs: **put the pointer back**. The restore was done
+through the library directly:
+
+```sh
+sh -c '. /data/omni-tools/omni-lib.sh; \
+       env_batch_write mender_boot_part 1 mender_boot_part_hex 1 \
+                       bootcount 0 upgrade_available 0'
+```
+
+which still goes through the whole audited path (validate → `force_ro` → one
+batched write → re-lock → read-back assert). Worth promoting to a first-class
+`omni-set-slot.sh --force`, because the moment you need it is the moment you are
+least in the mood to compose it by hand.
+
+### 11. `setexpr` exists on this unit
 
 `button=400` in the stored env was computed by
 `setexpr button *0xff800028 & 0x400`, answering the plan's open question: this
