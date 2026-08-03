@@ -89,9 +89,19 @@ jobs:
     with:
       kernel_run_id: ${{ inputs.kernel_run_id || '' }}
 
+  recovery:
+    name: Build the recovery image
+    uses: ./.github/workflows/build-omni-rootfs.yml
+    permissions:
+      contents: read
+      actions: read
+    with:
+      kernel_run_id: ${{ inputs.kernel_run_id || '' }}
+      variant: recovery
+
   publish:
     name: Publish the release
-    needs: image
+    needs: [image, recovery]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
@@ -143,6 +153,12 @@ jobs:
           name: omni-slot-image
           path: release
 
+      - name: Download the recovery image
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: omni-recovery-image
+          path: release
+
       - name: Download the kernel .debs that went into it
         run: |
           set -euo pipefail
@@ -161,9 +177,14 @@ jobs:
           set -euo pipefail
           cd release
 
-          for f in omni-slot.ext4.gz omni-slot.ext4.sha256 omni-slot.ext4.size; do
+          for f in omni-slot.ext4.gz omni-slot.ext4.sha256 omni-slot.ext4.size \
+                   omni-recovery.ext4.gz omni-recovery.ext4.sha256 omni-recovery.ext4.size; do
             [ -s "$f" ] || { echo "::error::missing or empty: $f"; exit 1; }
           done
+
+          rec_sha=$(cut -d' ' -f1 < omni-recovery.ext4.sha256)
+          rec_size=$(tr -dc '0-9' < omni-recovery.ext4.size)
+          rec_gz=$(stat -c%s omni-recovery.ext4.gz)
 
           img_sha=$(cut -d' ' -f1 < omni-slot.ext4.sha256)
           img_size=$(tr -dc '0-9' < omni-slot.ext4.size)
@@ -197,6 +218,9 @@ jobs:
             echo "gz_bytes=${gz_bytes}"
             echo "kver=${kver}"
             echo "pkgs=${pkgs}"
+            echo "rec_sha=${rec_sha}"
+            echo "rec_size=${rec_size}"
+            echo "rec_gz=${rec_gz}"
           } >> "$GITHUB_OUTPUT"
 
           # One checksums file covering everything that ships.
@@ -222,6 +246,7 @@ jobs:
           | packages | ${{ steps.assemble.outputs.pkgs }} |
           | image (uncompressed) | ${{ steps.assemble.outputs.img_size }} bytes |
           | download | ${{ steps.assemble.outputs.gz_bytes }} bytes |
+          | recovery image (p7) | ${{ steps.assemble.outputs.rec_size }} bytes, ${{ steps.assemble.outputs.rec_gz }} compressed |
           | built by | [run \`${GITHUB_RUN_ID}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) |
           | kernel from | [run \`${KERNEL_RUN_ID}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${KERNEL_RUN_ID}) |
 
@@ -261,6 +286,34 @@ jobs:
           **If you do not run \`omni-commit.sh\`, the next reboot rolls back.**
           That is the safety property, not a bug — the login banner shows the
           slot and whether it is ARMED or committed.
+
+          ### Recovery image (p7)
+
+          \`omni-recovery.ext4.gz\` is a separate, smaller image for the **recovery
+          partition**, not an A/B slot. Same kernel, but no initrd and no overlay:
+          U-Boot enters p7 with \`ramdisk_addr_r\` cleared and \`init=/init\`, and the
+          module tree is pruned to what this board actually loads so it fits 450 MiB.
+
+          It ships sshd and Tailscale, and Tailscale state lives on \`/data\` which
+          both slots share — so a recovery boot rejoins the same tailnet as the same
+          node, unattended. That is the point: recovery you can reach from anywhere.
+
+          \`\`\`
+          # on the Omni, writes p7 and never moves the boot pointer:
+          omni-flash.sh --slot 7 \\
+              --image  <url-of-omni-recovery.ext4.gz> \\
+              --sha256 ${{ steps.assemble.outputs.rec_sha }} \\
+              --size   ${{ steps.assemble.outputs.rec_size }}
+          \`\`\`
+
+          To enter recovery deliberately from a running system:
+
+          \`\`\`
+          fw_setenv force_hard_recovery 1 && reboot
+          \`\`\`
+
+          The image clears that flag on boot, so the next reboot returns to the A/B
+          slot on its own. **Do not arm p7** — arming would make recovery permanent.
 
           ### Not in this release
 

@@ -80,6 +80,7 @@ SKIPPED=0
 QUIET=0
 STRICT=0
 ALLOW_NO_SSH_KEY=0
+RECOVERY=0
 USE_COLOR=auto
 C_R=""; C_G=""; C_Y=""; C_B=""; C_0=""
 
@@ -169,6 +170,12 @@ Options:
       --allow-no-ssh-key  an image with no authorised root key warns instead of
                           failing. Match this with build-rootfs.sh's flag of the
                           same name: it means "serial console only, deliberately".
+      --recovery          check a RECOVERY (p7) image rather than an A/B slot.
+                          U-Boot enters p7 with ramdisk_addr_r cleared and
+                          init=/init, so the initrd, the overlay-root script and
+                          the initramfs hooks are all correctly absent; instead
+                          this asserts /init, the disarm unit, and that the A/B
+                          commit/deadman units are NOT present.
   -q, --quiet             print only failures/warnings and the summary
       --no-color / --color
 
@@ -211,6 +218,7 @@ while [ $# -gt 0 ]; do
 	--list) DO_LIST=1 ;;
 	--strict) STRICT=1 ;;
 	--allow-no-ssh-key) ALLOW_NO_SSH_KEY=1 ;;
+	--recovery) RECOVERY=1 ;;
 	-q | --quiet) QUIET=1 ;;
 	--no-color) USE_COLOR=no ;;
 	--color) USE_COLOR=yes ;;
@@ -731,7 +739,15 @@ check_boot_real_files() {
 			"U-Boot's ext4load reads /boot/<name> from inside the selected rootfs slot; if /boot is a symlink the load fails and you drop to the => prompt on every boot."
 		return 0
 	fi
-	for spec in "$KN|$MIN_KERNEL_BYTES|kernel" "$DN|$MIN_DTB_BYTES|dtb" "$RN|$MIN_RAMDISK_BYTES|initrd"; do
+	local specs="$KN|$MIN_KERNEL_BYTES|kernel $DN|$MIN_DTB_BYTES|dtb"
+	if [ "$RECOVERY" = 1 ]; then
+		# U-Boot clears ramdisk_addr_r before entering p7, so no initrd is
+		# loaded on that path and shipping one would be dead weight.
+		ok "recovery image: no initrd expected (U-Boot clears ramdisk_addr_r for p7)"
+	else
+		specs="$specs $RN|$MIN_RAMDISK_BYTES|initrd"
+	fi
+	for spec in $specs; do
 		name=${spec%%|*}
 		minsz=${spec#*|}; minsz=${minsz%%|*}
 		t=$(r_type "/boot/$name")
@@ -774,6 +790,13 @@ check_boot_real_files() {
 check_flatten_hooks() {
 	local h t
 	for h in "${HOOKS[@]}"; do
+		if [ "$RECOVERY" = 1 ]; then
+			case "$h" in
+			*/initramfs/post-update.d/*)
+				ok "recovery image: $h correctly absent (no initrd is built)"
+				continue ;;
+			esac
+		fi
 		t=$(r_type "$h")
 		if [ "$t" != file ]; then
 			fail "flatten hook $h is $t (expected a regular file)" \
@@ -1281,6 +1304,55 @@ check_ext4_features() {
 	fi
 }
 
+check_recovery() {
+	# What p7 must have, and must NOT have. U-Boot boots it with init=/init and
+	# no initrd, so /init is load-bearing: without it the slot does not start at
+	# all, and it is the one file nothing else would notice missing.
+	local t
+	t=$(r_type /init)
+	if [ "$t" = file ]; then
+		if r_exec /init; then
+			ok "/init is a real executable file"
+		else
+			fail "/init exists but is NOT executable (mode: $(r_mode /init))" \
+				"U-Boot prepends init=/init to bootargs for every recovery path. A non-executable /init means PID 1 cannot start and the slot panics instead of booting."
+		fi
+	else
+		fail "/init is $t (expected a regular executable file)" \
+			"Every recovery path -- reset button, watchdog latch, force_hard_recovery -- boots p7 with init=/init. Without it the recovery slot does not boot at all, which is precisely when you need it."
+	fi
+
+	# The anti-loop guard. force_hard_recovery is a STORED variable that nothing
+	# in U-Boot clears; without something clearing it, one remote recovery entry
+	# becomes permanent and the only way out is a serial console.
+	if [ "$(r_type /usr/lib/omni/omni-recovery-disarm)" = file ]; then
+		ok "omni-recovery-disarm present"
+	else
+		fail "/usr/lib/omni/omni-recovery-disarm is missing" \
+			"force_hard_recovery=1 is the only way into recovery without physical access, and nothing in U-Boot ever clears it. With no disarm, every later boot lands in recovery forever."
+	fi
+	if [ "$(r_type /etc/systemd/system/sysinit.target.wants/omni-recovery-disarm.service)" = symlink ] ||
+	   [ "$(r_type /etc/systemd/system/sysinit.target.wants/omni-recovery-disarm.service)" = file ]; then
+		ok "omni-recovery-disarm.service is enabled"
+	else
+		fail "omni-recovery-disarm.service is not enabled in sysinit.target.wants" \
+			"An installed-but-not-enabled disarm is the same as no disarm."
+	fi
+
+	# A/B semantics must NOT leak into recovery.
+	local u
+	for u in omni-commit.service omni-deadman.service omni-deadman.timer; do
+		# r_type says "missing", not "absent" -- getting this wrong inverts the
+		# test and reports a correct image as broken.
+		if [ "$(r_type "/etc/systemd/system/$u")" = missing ]; then
+			ok "$u correctly absent from the recovery image"
+		else
+			fail "$u is present in the recovery image" \
+				"Committing is an A/B notion and p7 is never armed; the deadman would reboot the very slot you booted to repair the box, on a 15 minute timer."
+		fi
+	done
+}
+
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
@@ -1299,7 +1371,11 @@ if [ -n "$ROOTFS" ]; then
 	wanted boot-real-files && check_boot_real_files
 	wanted flatten-hooks && check_flatten_hooks
 	wanted machine-id && check_machine_id
-	wanted initramfs && check_initramfs
+	if [ "$RECOVERY" = 1 ]; then
+		wanted recovery && check_recovery
+	else
+		wanted initramfs && check_initramfs
+	fi
 	wanted network-naming && check_network_naming
 	wanted sshd && check_sshd
 	wanted modprobe-blacklist && check_modprobe_blacklist

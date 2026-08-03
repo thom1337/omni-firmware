@@ -96,6 +96,11 @@ on:
         required: false
         default: false
         type: boolean
+      variant:
+        description: 'slot = the 850 MiB A/B rootfs image. recovery = the 450 MiB p7 recovery image (no initrd, pruned modules, boots init=/init).'
+        required: false
+        default: 'slot'
+        type: string
 
   # Called by release.yml so a tagged release ships the image THIS workflow
   # built and asserted, rather than a second copy of the build steps that
@@ -114,6 +119,10 @@ on:
         required: false
         default: false
         type: boolean
+      variant:
+        required: false
+        default: 'slot'
+        type: string
     outputs:
       kernel_run_id:
         description: 'The build-omni-kernel.yml run the .debs actually came from, resolved. The release attaches that run kernel artifacts so an image and its kernel are published together.'
@@ -129,7 +138,7 @@ permissions:
 
 jobs:
   rootfs:
-    name: Build slot image and assert invariants
+    name: Build image and assert invariants
     runs-on: ubuntu-24.04
     timeout-minutes: 120
 
@@ -143,7 +152,8 @@ jobs:
       OMNI_KERNEL_RUN_ID: ${{ inputs.kernel_run_id }}
       OMNI_SLOT_SIZE_MIB: ${{ inputs.slot_size_mib }}
       OMNI_STRICT: ${{ inputs.strict == true }}
-      OMNI_NAME: omni-slot
+      OMNI_VARIANT: ${{ inputs.variant || 'slot' }}
+      OMNI_NAME: ${{ (inputs.variant == 'recovery') && 'omni-recovery' || 'omni-slot' }}
       OMNI_OUT: rootfs/out
       OMNI_DEBS: rootfs/kernel-debs
       OMNI_MNT: /mnt/omni-slot
@@ -344,6 +354,25 @@ jobs:
           # shared or long-lived host.
           args=(--privileged --kernel-debs "${OMNI_DEBS}")
 
+          # The recovery image is not "the slot image, smaller". U-Boot enters
+          # p7 with ramdisk_addr_r cleared and init=/init, so it has no initrd
+          # and no overlay root; and 450 MiB will not hold the stock 212 MiB
+          # module tree beside a usable system, so the modules are pruned to
+          # what this board actually loads. See rootfs/overlay-recovery/.
+          if [ "${OMNI_VARIANT}" = "recovery" ]; then
+            args+=(--blocks 115200
+                   --overlay rootfs/overlay-recovery
+                   --packages rootfs/packages-recovery.list
+                   --no-initramfs
+                   --keep-modules rootfs/modules-recovery.keep
+                   --hostname omni-recovery
+                   --name omni-recovery)
+            echo "building the RECOVERY image (p7, 450 MiB, no initrd, pruned modules)"
+          elif [ "${OMNI_VARIANT}" != "slot" ]; then
+            echo "::error::variant must be 'slot' or 'recovery', got '${OMNI_VARIANT}'"
+            exit 1
+          fi
+
           # The authorised root key is a build input, never a committed file --
           # a key in the repo would make every image built from it trust one
           # person. Set the repository variable OMNI_SSH_PUBKEY (Settings ->
@@ -453,7 +482,11 @@ jobs:
           if [ -z "${OMNI_SSH_PUBKEY}" ]; then
             nokey='--allow-no-ssh-key'
           fi
-          sudo bash tools/check-image-invariants.sh --no-color ${strict} ${nokey} \
+          rec=''
+          if [ "${OMNI_VARIANT}" = "recovery" ]; then
+            rec='--recovery'
+          fi
+          sudo bash tools/check-image-invariants.sh --no-color ${strict} ${nokey} ${rec} \
             --rootfs "${OMNI_MNT}" \
             --image "${OMNI_OUT}/${OMNI_NAME}.ext4"
 
@@ -470,17 +503,21 @@ jobs:
         if: always()
         run: rm -f "${OMNI_OUT}/${OMNI_NAME}.ext4"
 
-      - name: Upload the slot image
+      - name: Upload the image
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
-          name: omni-slot-image
+          name: ${{ (inputs.variant == 'recovery') && 'omni-recovery-image' || 'omni-slot-image' }}
+          # Wildcarded rather than repeating the variant expression six times:
+          # the build produces exactly one image per run, named omni-slot or
+          # omni-recovery, and if-no-files-found: error still catches a build
+          # that produced nothing.
           path: |
-            rootfs/out/omni-slot.ext4.gz
-            rootfs/out/omni-slot.ext4.sha256
-            rootfs/out/omni-slot.ext4.size
-            rootfs/out/omni-slot.ext4.gz.sha256
-            rootfs/out/omni-slot.manifest
-            rootfs/out/omni-slot.packages
+            rootfs/out/*.ext4.gz
+            rootfs/out/*.ext4.sha256
+            rootfs/out/*.ext4.size
+            rootfs/out/*.ext4.gz.sha256
+            rootfs/out/*.manifest
+            rootfs/out/*.packages
           if-no-files-found: error
           retention-days: 30
 
