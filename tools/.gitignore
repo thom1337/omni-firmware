@@ -1,0 +1,7 @@
+# Bytecode from the serial-console drivers (omni-console.py, omni-uboot.py,
+# omni-push.py, omni-dd-push.py). Kept here rather than in the root .gitignore
+# so that this directory ignores its own artefacts wherever it is merged: all
+# the Python in this repository lives in tools/, and one of these .pyc files
+# was committed once already.
+__pycache__/
+*.pyc
