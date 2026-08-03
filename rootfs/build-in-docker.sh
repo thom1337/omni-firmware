@@ -116,6 +116,25 @@ declare -a BUILD_CMD=(docker build
 declare -a RUN_CMD=(docker run --rm
 	--env "UID=$(id -u)"
 	--env "GID=$(id -g)")
+# The authorised SSH key is a build input rather than a committed file, so it has
+# to cross the container boundary.
+#
+# OMNI_SSH_PUBKEY_FILE is resolved HERE, on the host, and forwarded as the key
+# itself. Passing the variable through unchanged would hand the container a host
+# path such as ~/.ssh/id_ed25519.pub, which does not exist inside it -- only the
+# repository is mounted -- and the build would fail with a confusing "not
+# readable" on a file the user can plainly see.
+_ssh_pubkey="${OMNI_SSH_PUBKEY:-}"
+if [ -n "${OMNI_SSH_PUBKEY_FILE:-}" ]; then
+	[ -r "$OMNI_SSH_PUBKEY_FILE" ] ||
+		die "OMNI_SSH_PUBKEY_FILE is not readable on this host: $OMNI_SSH_PUBKEY_FILE"
+	_ssh_pubkey="${_ssh_pubkey}${_ssh_pubkey:+$'\n'}$(cat -- "$OMNI_SSH_PUBKEY_FILE")"
+fi
+if [ -n "$_ssh_pubkey" ]; then
+	RUN_CMD+=(--env "OMNI_SSH_PUBKEY=${_ssh_pubkey}")
+fi
+# --ssh-pubkey / --allow-no-ssh-key on the command line still work: they are in
+# "$@" and forwarded with everything else below.
 [ -t 1 ] && RUN_CMD+=(-t)
 if [ "$PRIVILEGED" = 1 ]; then
 	RUN_CMD+=(--privileged)

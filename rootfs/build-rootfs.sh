@@ -67,6 +67,18 @@ KERNEL_DEB_DIR=""
 WORK_DIR=""
 PACK_METHOD=auto
 
+# The root authorized_keys is a BUILD INPUT, not a committed file. sshd here has
+# PasswordAuthentication no and root's password locked to '*', so whatever lands
+# in /root/.ssh/authorized_keys is the only way into the box over the network.
+# Committing a key would mean every image built from this repository trusts one
+# particular person and nobody else -- fine for the person who committed it, a
+# backdoor for everyone else, and unusable for anyone who just wants to build
+# the firmware. So the key comes from the environment or the command line, and a
+# build with neither fails unless serial-only access is chosen deliberately.
+SSH_PUBKEY="${OMNI_SSH_PUBKEY:-}"
+SSH_PUBKEY_FILE="${OMNI_SSH_PUBKEY_FILE:-}"
+ALLOW_NO_SSH_KEY=0
+
 CONSOLE=ttyAML0
 CONSOLE_BAUD=115200
 IMAGE_HOSTNAME=omni
@@ -171,6 +183,14 @@ IMAGE CONTENT
   --hostname NAME       default ${IMAGE_HOSTNAME}
   --root-password-hash H  crypt(3) hash for root. Default: root password locked ('*').
                         Serial autologin still works (login -f skips authentication).
+  --ssh-pubkey KEY      SSH public key to authorise for root, as a literal
+                        'ssh-ed25519 AAAA... comment' string. Repeatable input is
+                        supported by passing a multi-line value. Env: OMNI_SSH_PUBKEY
+  --ssh-pubkey-file F   read the key(s) from F instead ('-' for stdin).
+                        Env: OMNI_SSH_PUBKEY_FILE
+  --allow-no-ssh-key    build with NO authorised key. The image is then reachable
+                        only over the serial console -- on a deployed unit that
+                        means a site visit. Deliberate choice, never a default.
   --enable-unit U       extra systemd unit to enable (repeatable; prefix '?' = optional)
   --mask-unit U         systemd unit to mask (repeatable)
   --kernel-name N       default ${KERNEL_NAME}
@@ -239,6 +259,9 @@ while [ $# -gt 0 ]; do
 	--console-baud)     CONSOLE_BAUD=${2:?--console-baud needs a value}; shift 2;;
 	--hostname)         IMAGE_HOSTNAME=${2:?--hostname needs a value}; shift 2;;
 	--root-password-hash) ROOT_PW_HASH=${2:?--root-password-hash needs a value}; shift 2;;
+	--ssh-pubkey)       SSH_PUBKEY=${2:?--ssh-pubkey needs a value}; shift 2;;
+	--ssh-pubkey-file)  SSH_PUBKEY_FILE=${2:?--ssh-pubkey-file needs a value}; shift 2;;
+	--allow-no-ssh-key) ALLOW_NO_SSH_KEY=1; shift;;
 	--enable-unit)      EXTRA_UNITS+=("${2:?--enable-unit needs a value}"); shift 2;;
 	--mask-unit)        MASK_UNITS+=("${2:?--mask-unit needs a value}"); shift 2;;
 	--kernel-name)      KERNEL_NAME=${2:?--kernel-name needs a value}; shift 2;;
@@ -334,6 +357,61 @@ if [ "$WITH_HEADERS" = 1 ]; then
 	mapfile -t HDR_DEBS < <(find "$KERNEL_DEB_DIR" -maxdepth 1 -type f -name 'linux-headers-*.deb' | sort)
 	[ ${#HDR_DEBS[@]} -gt 0 ] || die "--with-headers given but no linux-headers-*.deb in $KERNEL_DEB_DIR"
 	INSTALL_DEBS+=("${HDR_DEBS[@]}")
+fi
+
+# SSH authorised keys. Resolved here so a bad key fails in the first second of
+# the build rather than after the ~9 minutes it takes to reach the overlay hook.
+if [ -n "$SSH_PUBKEY_FILE" ]; then
+	if [ "$SSH_PUBKEY_FILE" = "-" ]; then
+		SSH_PUBKEY="${SSH_PUBKEY}${SSH_PUBKEY:+$'\n'}$(cat)"
+	else
+		[ -r "$SSH_PUBKEY_FILE" ] || die "--ssh-pubkey-file: not readable: $SSH_PUBKEY_FILE"
+		SSH_PUBKEY="${SSH_PUBKEY}${SSH_PUBKEY:+$'\n'}$(cat -- "$SSH_PUBKEY_FILE")"
+	fi
+fi
+
+SSH_KEYS_RESOLVED=""
+_ssh_key_count=0
+while IFS= read -r _line; do
+	case "$_line" in
+	''|'#'*) continue ;;
+	# A private key in an image is a far worse outcome than no key at all, and
+	# the mistake is easy to make with `--ssh-pubkey-file ~/.ssh/id_ed25519`.
+	*"PRIVATE KEY"*)
+		die "--ssh-pubkey/--ssh-pubkey-file was given a PRIVATE key.
+Only public keys belong in an image. You probably meant the .pub file." ;;
+	ssh-ed25519\ *|ssh-rsa\ *|ecdsa-sha2-*|sk-ssh-ed25519*|sk-ecdsa-*)
+		SSH_KEYS_RESOLVED="${SSH_KEYS_RESOLVED}${SSH_KEYS_RESOLVED:+$'\n'}${_line}"
+		_ssh_key_count=$((_ssh_key_count + 1)) ;;
+	*)
+		die "unrecognised SSH public key line: ${_line%% *}...
+Expected one of ssh-ed25519, ssh-rsa, ecdsa-sha2-*, sk-ssh-ed25519, sk-ecdsa-*.
+sshd silently ignores lines it cannot parse, so this fails the build instead." ;;
+	esac
+done <<<"$SSH_PUBKEY"
+
+if [ "$_ssh_key_count" -eq 0 ] && [ "$ALLOW_NO_SSH_KEY" != 1 ]; then
+	die "no SSH public key given, and password authentication is disabled in this image.
+sshd_config.d/10-omni.conf sets PasswordAuthentication no and root's password is
+locked to '*', so an image with no authorised key is reachable ONLY over the
+serial console -- on a deployed unit, that means a site visit.
+
+Supply one of:
+    --ssh-pubkey 'ssh-ed25519 AAAA... you@host'
+    --ssh-pubkey-file ~/.ssh/id_ed25519.pub
+    OMNI_SSH_PUBKEY='ssh-ed25519 AAAA... you@host'   (env)
+
+or pass --allow-no-ssh-key if serial-only access is what you actually want.
+
+The key is deliberately NOT committed to this repository: it would make every
+image built from it trust one person and nobody else."
+fi
+# NOT `[ ... ] && info ...`: under `set -e` the false branch would abort the
+# build, so --allow-no-ssh-key would fail exactly when it is meant to succeed.
+if [ "$_ssh_key_count" -gt 0 ]; then
+	info "authorising ${_ssh_key_count} SSH public key(s) for root"
+else
+	warn "building with NO authorised SSH key (--allow-no-ssh-key): serial console only"
 fi
 
 # Overlay.
@@ -546,10 +624,27 @@ done
 for k in "${chroot_dir}"/etc/ssh/ssh_host_*_key "${chroot_dir}"/etc/wireguard/*.key; do
 	[ -f "$k" ] && chmod 0600 "$k"
 done
-# sshd refuses an authorized_keys that is writable by group or other, and with
-# password auth off that refusal means no network login at all.
-[ -f "${chroot_dir}/root/.ssh/authorized_keys" ] && \
+# The authorised key(s) come from the build environment, never from a committed
+# file -- see the --ssh-pubkey handling in build-rootfs.sh. The overlay ships
+# only the documentation header; the keys are appended here.
+if [ -n "${OMNI_SSH_KEYS:-}" ]; then
+	mkdir -p "${chroot_dir}/root/.ssh"
+	printf '%s\n' "$OMNI_SSH_KEYS" >> "${chroot_dir}/root/.ssh/authorized_keys"
+	echo "I: 10-overlay: authorised $(printf '%s\n' "$OMNI_SSH_KEYS" | grep -c .) SSH key(s) for root"
+fi
+# root must own these, not the build user's uid: sshd's StrictModes silently
+# refuses an authorized_keys owned by anyone else, and with password auth off
+# that refusal means no network login at all.
+if [ -d "${chroot_dir}/root/.ssh" ]; then
+	chown -R 0:0 "${chroot_dir}/root/.ssh"
+	chmod 0700 "${chroot_dir}/root/.ssh"
+fi
+# sshd also refuses an authorized_keys that is writable by group or other.
+# An `if`, not `[ ... ] && ...`: under `set -e` the false branch aborts the hook,
+# and with the key no longer committed the file can legitimately be absent.
+if [ -f "${chroot_dir}/root/.ssh/authorized_keys" ]; then
 	chmod 0600 "${chroot_dir}/root/.ssh/authorized_keys"
+fi
 exit 0
 HOOK10
 
@@ -1103,6 +1198,7 @@ export OMNI_RAMDISK_NAME_DEFAULT="$RAMDISK_NAME"
 export OMNI_ASSERT_BOOT="$ASSERT_BOOT"
 export OMNI_ALLOW_UNVERIFIED="$ALLOW_UNVERIFIED"
 export OMNI_FORBIDDEN="${FORBIDDEN_PACKAGES[*]}"
+export OMNI_SSH_KEYS="$SSH_KEYS_RESOLVED"
 
 # --------------------------------------------------------------------------- pack method
 detect_pack_method() {

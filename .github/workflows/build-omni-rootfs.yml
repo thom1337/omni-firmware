@@ -147,6 +147,9 @@ jobs:
       OMNI_OUT: rootfs/out
       OMNI_DEBS: rootfs/kernel-debs
       OMNI_MNT: /mnt/omni-slot
+      # A public key is not a secret, so this is a repository *variable*, not a
+      # secret -- which also means it is readable in logs, as intended.
+      OMNI_SSH_PUBKEY: ${{ vars.OMNI_SSH_PUBKEY }}
 
     steps:
       # mmdebstrap plus a packed ext4 slot plus Docker layers. root-reserve-mb
@@ -341,6 +344,22 @@ jobs:
           # shared or long-lived host.
           args=(--privileged --kernel-debs "${OMNI_DEBS}")
 
+          # The authorised root key is a build input, never a committed file --
+          # a key in the repo would make every image built from it trust one
+          # person. Set the repository variable OMNI_SSH_PUBKEY (Settings ->
+          # Secrets and variables -> Actions -> Variables) to your public key.
+          #
+          # With it unset the build still succeeds, but produces an image
+          # reachable ONLY over the serial console, and says so loudly rather
+          # than quietly shipping something nobody can log into.
+          if [ -n "${OMNI_SSH_PUBKEY}" ]; then
+            args+=(--ssh-pubkey "${OMNI_SSH_PUBKEY}")
+            echo "authorising the repository's OMNI_SSH_PUBKEY variable"
+          else
+            args+=(--allow-no-ssh-key)
+            echo "::warning::repository variable OMNI_SSH_PUBKEY is not set — this image will have NO authorised SSH key and is reachable only over the serial console. Set it under Settings → Secrets and variables → Actions → Variables."
+          fi
+
           if [ -n "${OMNI_SLOT_SIZE_MIB}" ]; then
             case "${OMNI_SLOT_SIZE_MIB}" in
               ''|*[!0-9]*) echo "::error::slot_size_mib must be a positive integer, got '${OMNI_SLOT_SIZE_MIB}'"; exit 1;;
@@ -428,7 +447,13 @@ jobs:
           # Plain sudo, not `sudo -E`: nothing here is passed through the
           # environment, and -E needs a SETENV tag that a runner's sudoers
           # rule is not required to carry.
-          sudo bash tools/check-image-invariants.sh --no-color ${strict} \
+          # Must agree with the build step: if no key was baked in, the checker
+          # would otherwise fail the very image the build deliberately produced.
+          nokey=''
+          if [ -z "${OMNI_SSH_PUBKEY}" ]; then
+            nokey='--allow-no-ssh-key'
+          fi
+          sudo bash tools/check-image-invariants.sh --no-color ${strict} ${nokey} \
             --rootfs "${OMNI_MNT}" \
             --image "${OMNI_OUT}/${OMNI_NAME}.ext4"
 

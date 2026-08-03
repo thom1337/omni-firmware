@@ -79,6 +79,7 @@ WARNED=0
 SKIPPED=0
 QUIET=0
 STRICT=0
+ALLOW_NO_SSH_KEY=0
 USE_COLOR=auto
 C_R=""; C_G=""; C_Y=""; C_B=""; C_0=""
 
@@ -165,6 +166,9 @@ Options:
       --dtb-name N        override the flattened dtb name
       --ramdisk-name N    override the flattened initrd name
       --strict            warnings and skips become failures
+      --allow-no-ssh-key  an image with no authorised root key warns instead of
+                          failing. Match this with build-rootfs.sh's flag of the
+                          same name: it means "serial console only, deliberately".
   -q, --quiet             print only failures/warnings and the summary
       --no-color / --color
 
@@ -206,6 +210,7 @@ while [ $# -gt 0 ]; do
 	-h | --help) usage; exit 0 ;;
 	--list) DO_LIST=1 ;;
 	--strict) STRICT=1 ;;
+	--allow-no-ssh-key) ALLOW_NO_SSH_KEY=1 ;;
 	-q | --quiet) QUIET=1 ;;
 	--no-color) USE_COLOR=no ;;
 	--color) USE_COLOR=yes ;;
@@ -1085,9 +1090,12 @@ check_ssh_authorized_keys() {
 
 	if [ "$keys" -gt 0 ]; then
 		ok "$f has $keys usable public key(s)"
+	elif [ "$ALLOW_NO_SSH_KEY" = 1 ]; then
+		warn "no usable public key in $f (--allow-no-ssh-key given)" \
+			"This image is reachable only over the serial console. That is a deliberate choice here, not an accident -- but on a deployed unit in a closet it means a site visit."
 	else
 		fail "no usable public key in $f, but password authentication is disabled" \
-			"PasswordAuthentication is no and root's password is locked to '*', so a key is the only network login. With none baked in, this image is reachable ONLY over the serial console. Add a key to rootfs/overlay/root/.ssh/authorized_keys, or accept serial-only access deliberately."
+			"PasswordAuthentication is no and root's password is locked to '*', so a key is the only network login. With none baked in, this image is reachable ONLY over the serial console. The key is a BUILD INPUT, not a committed file -- rebuild with --ssh-pubkey / --ssh-pubkey-file (or OMNI_SSH_PUBKEY), or pass --allow-no-ssh-key here and to build-rootfs.sh to accept serial-only access deliberately."
 	fi
 	[ "$bad" -gt 0 ] && warn "$bad unrecognised non-comment line(s) in $f" \
 		"sshd ignores lines it cannot parse; a mangled key silently is not a key."
