@@ -1,4 +1,0 @@
-[Mount]
-What=/dev/mmcblk0p3
-Where=/data
-Options=noatime
