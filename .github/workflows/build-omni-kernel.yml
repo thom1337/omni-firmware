@@ -1,0 +1,499 @@
+# ==============================================================================
+#  Build Omni Kernel — Armbian as a kernel factory for the Avast Omni
+# ==============================================================================
+#
+#  WHAT THIS WORKFLOW PROVES
+#  -------------------------
+#   1. The board definition in board/ still applies cleanly to the pinned
+#      armbian/ submodule: tools/sync-armbian-board.sh runs, the upstream base
+#      kernel config still exists, patch/kernel/archive/meson64-<X.Y>/ still
+#      exists, and the kernel pin in board/post_family_config__avast-omni.sh
+#      still agrees with the series the DTS is dropped into.
+#   2. The kernel actually compiles for BOARD=avast-omni, producing the four
+#      -meson64 .debs the Debian slot image is built from.
+#   3. board/meson-axg-apollo.dts compiles as part of that build, and
+#      `./compile.sh dts-check` re-runs it through `make CHECK_DTBS=y` so the
+#      device-tree binding-schema output lands in the log.
+#   4. tools/check-kconfig-invariants.sh holds against the config the shipped
+#      kernel was ACTUALLY built with — read out of the linux-image .deb, not
+#      out of the fragment we asked for. This is the gate that catches a
+#      missing CONFIG_REALTEK_PHY: without it the RTL8211F silently falls back
+#      to genphy and you get "gigabit that mostly works"
+#      (docs/ARMBIAN-MIGRATION.md, risk 3). It equally catches a missing
+#      CONFIG_PANIC_TIMEOUT/CONFIG_PANIC_ON_OOPS, without which a panicked
+#      kernel never reboots and bootcount rollback provably cannot fire
+#      (appendix correction 5).
+#
+#  WHAT THIS WORKFLOW DELIBERATELY DOES NOT DO
+#  -------------------------------------------
+#   * It NEVER builds, packages, post-processes or writes a bootloader. The
+#     Omni boots a vendor U-Boot 2018.09 carrying the Mender A/B contract, and
+#     its environment is a SINGLE non-redundant 8 KB copy at offset 0 of
+#     /dev/mmcblk0boot0 — there is no second copy to fall back to.
+#     board/avast-omni.csc sets BOOTCONFIG="none", replaces
+#     write_uboot_platform() with a hard error, and asserts
+#     ARMBIAN_WILL_BUILD_UBOOT=no in extension_finish_config. If a future
+#     framework change tries anyway, the build dies here rather than on a
+#     device that would have to come back from a customer site.
+#   * It never builds an Armbian rootfs or image, and therefore never produces
+#     armbian-bsp-cli — and so never armbian-install, which repartitions eMMC.
+#     The Debian slot image is built separately, by build-omni-rootfs.yml.
+#   * It never touches a device, never writes a U-Boot environment variable,
+#     never arms an A/B slot. Everything here is a file under armbian/output/.
+#   * `dts-check` fails this workflow when the DTS does not COMPILE. Binding
+#     findings from `make CHECK_DTBS=y` are printed as warnings by the kernel
+#     build system and do not fail it — read the log. Classifying those is
+#     Phase 3/5 work, not something CI can decide.
+#   * Artifacts are uploaded only when every gate above passed. A kernel that
+#     failed the kconfig gate must not be one `gh run download` away from
+#     being flashed.
+#
+#  Local equivalent of this entire file:
+#     bash tools/sync-armbian-board.sh
+#     cd armbian && ./compile.sh kernel    BOARD=avast-omni BRANCH=current
+#     cd armbian && ./compile.sh dts-check BOARD=avast-omni BRANCH=current
+#     bash tools/check-kconfig-invariants.sh --strict armbian/output/debs/linux-image-*.deb
+#
+#  No secrets are required; GITHUB_TOKEN is not used.
+# ==============================================================================
+
+name: Build Omni Kernel
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'board/**'
+      # NOT 'tools/**'. That matched every device-side script and every serial
+      # console helper, none of which can affect a kernel build -- so routine
+      # tooling commits kept starting a 60-90 minute build that the next push
+      # then cancelled, and the kernel was effectively never validated. Only the
+      # tools this workflow actually RUNS belong here.
+      - 'tools/sync-armbian-board.sh'
+      - 'tools/check-kconfig-invariants.sh'
+      - 'tools/validate-dts.sh'
+      - 'tools/dts-validate.Dockerfile'
+      - 'armbian'          # the submodule gitlink: a pin bump must be CI-verified (risk 8)
+      - '.gitmodules'
+      - '.github/workflows/build-omni-kernel.yml'
+  workflow_dispatch:
+    inputs:
+      armbian_branch:
+        description: 'Armbian kernel BRANCH (oldlts=6.12, current=6.18). Anything other than the pinned branch produces an EVALUATION kernel that must not ship.'
+        required: false
+        default: 'current'
+        type: string
+      kernel_version:
+        description: 'Kernel series X.Y. Selects patch/kernel/archive/meson64-X.Y/dt/ for the DTS. Must equal the pin in board/post_family_config__avast-omni.sh when building the pinned branch.'
+        required: false
+        default: '6.18'
+        type: string
+      strict_kconfig:
+        description: 'Promote every WARN kernel-config invariant to a failure.'
+        required: false
+        default: true
+        type: boolean
+
+# A push supersedes whatever is still running for the same ref. A 60-90 minute
+# kernel build for a commit nobody will look at again is pure runner time.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  kernel:
+    name: Build kernel and assert invariants
+    # Pinned, not ubuntu-latest: Armbian validates the host by release codename
+    # (lib/functions/host/host-release.sh). noble is on its supported list; a
+    # silent runner-image roll to a codename that is not would abort the build
+    # with "Unsupported build system" in the middle of a migration.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    env:
+      OMNI_BOARD: avast-omni
+      OMNI_LINUXFAMILY: meson64
+      # inputs.* are empty on `push`; these are the shipping defaults.
+      OMNI_BRANCH: ${{ inputs.armbian_branch || 'current' }}
+      OMNI_KERNEL_VERSION: ${{ inputs.kernel_version || '6.18' }}
+      # Anything but an explicit `false` means strict.
+      OMNI_STRICT_KCONFIG: ${{ inputs.strict_kconfig != false }}
+
+    steps:
+      # ------------------------------------------------------------------
+      # Disk. A meson64 kernel worktree plus modules plus xz-compressed debs
+      # does not fit on a stock runner. root-reserve-mb is deliberately large:
+      # `./compile.sh requirements` apt-installs several GB onto /, which is
+      # NOT the volume this action creates.
+      # ------------------------------------------------------------------
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@fc881a613ad2a34aca9c9624518214ebc21dfc0c # v10
+        with:
+          root-reserve-mb: 8192
+          swap-size-mb: 4096
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # NOT submodules:true. This repo also carries the Yocto layers
+          # (poky, meta-openembedded, meta-gplv2, meta-meson,
+          # meta-virtualization) behind git:// URLs: several GB, frequently
+          # unreachable over git:// from a runner, and irrelevant to the
+          # kernel. Only armbian/ is initialised, in the next step.
+          submodules: false
+          persist-credentials: false
+
+      - name: Initialise the armbian/ submodule at its pinned SHA
+        run: |
+          set -euo pipefail
+          # Shallow first — armbian/build is large. A shallow fetch only
+          # reaches the tip of the default branch, so when the pin is an older
+          # commit, fall back to a full clone instead of guessing.
+          if ! git submodule update --init --depth 1 armbian; then
+            echo "::notice::shallow fetch did not reach the pinned SHA; unshallowing armbian/"
+            git -C armbian fetch --unshallow || true
+            git submodule update --init armbian
+          fi
+          git submodule status armbian
+          test -x armbian/compile.sh || { echo "::error::armbian/compile.sh missing after submodule init"; exit 1; }
+
+      # ------------------------------------------------------------------
+      # Tripwire: the kernel series is pinned in TWO places that must agree —
+      # the post_family_config hook (which forces KERNEL_MAJOR_MINOR at build
+      # time) and --kernel-version here (which decides which
+      # patch/kernel/archive/meson64-X.Y/dt/ the DTS is dropped into). If they
+      # disagree the DTS is placed where the build will not look, the kernel
+      # builds WITHOUT the Omni device tree, and nothing else notices until a
+      # board fails to boot.
+      # ------------------------------------------------------------------
+      - name: Assert the kernel pin matches the requested build
+        run: |
+          set -euo pipefail
+          hook="board/post_family_config__${OMNI_BOARD}.sh"
+          test -f "$hook" || { echo "::error::missing $hook"; exit 1; }
+          pinned_kernel=$(awk -F'"' '/^declare -g AVAST_OMNI_PINNED_KERNEL=/{print $2; exit}' "$hook")
+          pinned_branch=$(awk -F'"' '/^declare -g AVAST_OMNI_PINNED_BRANCH=/{print $2; exit}' "$hook")
+          test -n "$pinned_kernel" || { echo "::error::AVAST_OMNI_PINNED_KERNEL not found in $hook"; exit 1; }
+          test -n "$pinned_branch" || { echo "::error::AVAST_OMNI_PINNED_BRANCH not found in $hook"; exit 1; }
+
+          echo "hook pins: BRANCH=${pinned_branch} KERNEL=${pinned_kernel}"
+          echo "requested: BRANCH=${OMNI_BRANCH} KERNEL=${OMNI_KERNEL_VERSION}"
+
+          if [ "${OMNI_BRANCH}" = "${pinned_branch}" ]; then
+            if [ "${OMNI_KERNEL_VERSION}" != "${pinned_kernel}" ]; then
+              echo "::error::BRANCH '${OMNI_BRANCH}' is the pinned branch but kernel_version '${OMNI_KERNEL_VERSION}' != the hook's pin '${pinned_kernel}'. The DTS would be dropped into meson64-${OMNI_KERNEL_VERSION}/dt/ while the build uses meson64-${pinned_kernel}. Change one of them deliberately."
+              exit 1
+            fi
+            echo "shipping configuration: kernel ${pinned_kernel} on BRANCH=${pinned_branch}"
+          else
+            echo "::warning::BRANCH='${OMNI_BRANCH}' is not the pinned '${pinned_branch}'. This is an EVALUATION build: the kernel pin is not enforced and the result must not be shipped without re-running the Phase 4 gate."
+          fi
+
+      # ------------------------------------------------------------------
+      # One-way sync: board/ -> armbian/. Nothing is ever read back out.
+      # Runs before `requirements` so a broken board/ fails in seconds rather
+      # than after a five-minute apt run.
+      #
+      # Every repo script is invoked as `bash <path>` so the result does not
+      # depend on the exec bit surviving a checkout.
+      # ------------------------------------------------------------------
+      - name: Sync board files into the armbian tree
+        run: |
+          set -euo pipefail
+          bash tools/sync-armbian-board.sh \
+            --branch "${OMNI_BRANCH}" \
+            --kernel-version "${OMNI_KERNEL_VERSION}" \
+            --verbose
+
+      - name: Show what the build will use
+        run: |
+          set -euo pipefail
+          echo "--- board config ---"
+          ls -l "armbian/config/boards/${OMNI_BOARD}.csc"
+          echo "--- extension ---"
+          ls -l "armbian/userpatches/extensions/post_family_config__${OMNI_BOARD}.sh"
+          echo "--- merged kernel config ---"
+          cfg="armbian/userpatches/config/kernel/linux-${OMNI_LINUXFAMILY}-${OMNI_BRANCH}.config"
+          ls -l "$cfg"
+          echo "delta section:"
+          sed -n '/--- avast-omni delta/,$p' "$cfg"
+          echo "--- device tree drop dir ---"
+          ls -l "armbian/patch/kernel/archive/${OMNI_LINUXFAMILY}-${OMNI_KERNEL_VERSION}/dt/" || true
+
+      # ------------------------------------------------------------------
+      # Host dependencies. Same sequence armbian/build's own action.yml uses:
+      # `requirements` refuses to run as non-root, and leaves root-owned
+      # output/ and cache/ dirs behind that the unprivileged build then trips
+      # over.
+      # ------------------------------------------------------------------
+      - name: Install Armbian host requirements
+        working-directory: armbian
+        run: |
+          set -euo pipefail
+          sudo ./compile.sh requirements SHOW_LOG=yes
+          sudo chown -R "$(id -u):$(id -g)" .
+
+      # ------------------------------------------------------------------
+      # The build.
+      #
+      # Every flag below is a real variable in the pinned framework (verified
+      # against lib/functions/ at the pinned SHA); none are invented.
+      #
+      #   KERNEL_CONFIGURE=no   never open menuconfig, and do not let
+      #                         kernel-config.sh:166 rewrite the config file
+      #                         the sync just generated.
+      #   PREFER_DOCKER=no      cli_standard_relaunch_docker_or_sudo()
+      #                         delegates to Docker by default when not root.
+      #                         On a runner that builds an Armbian builder
+      #                         image into /var/lib/docker — on the ROOT
+      #                         filesystem, not on the volume
+      #                         maximize-build-space just created. =no makes
+      #                         it re-exec under sudo instead, keeping the
+      #                         whole build on the big volume; it passes
+      #                         SET_OWNER_TO_UID so output/ comes back owned
+      #                         by the runner user. (If this path ever breaks,
+      #                         PREFER_DOCKER=yes is the supported fallback —
+      #                         drop root-reserve-mb below to ~4096 first.)
+      #   SHARE_LOG=no          export-logs.sh uploads the whole build log to
+      #                         a public paste server when yes. This is a
+      #                         private device migration; the log stays here.
+      #   SHOW_LOG=yes          stream the build log to stdout. Already the
+      #                         default under CI=true; set explicitly so the
+      #                         log cannot silently vanish if that moves.
+      #   EXPERT=yes            matches armbian/build's own action.yml.
+      #   ARTIFACT_IGNORE_CACHE=yes
+      #                         build it; never serve the artifact out of the
+      #                         local or the remote OCI cache. CI that can
+      #                         hand back a cached kernel is not a gate.
+      #
+      # Deliberately NOT passed: RELEASE / BUILD_MINIMAL / BUILD_DESKTOP /
+      # COMPRESS_OUTPUTIMAGE — those belong to image builds, and this board
+      # never builds an image.
+      # ------------------------------------------------------------------
+      - name: Build the kernel
+        working-directory: armbian
+        run: |
+          set -euo pipefail
+          ./compile.sh kernel \
+            BOARD="${OMNI_BOARD}" \
+            BRANCH="${OMNI_BRANCH}" \
+            KERNEL_CONFIGURE=no \
+            PREFER_DOCKER=no \
+            SHARE_LOG=no \
+            SHOW_LOG=yes \
+            EXPERT=yes \
+            ARTIFACT_IGNORE_CACHE=yes
+
+      # ------------------------------------------------------------------
+      # dts-check is `WHAT=kernel DTS_VALIDATE=yes ARTIFACT_WILL_NOT_BUILD=yes`
+      # (lib/functions/cli/commands.sh:140). It re-runs the patching and then
+      # `make CHECK_DTBS=y ${BOOT_FDT_FILE}` against the worktree the previous
+      # step already populated, so it is cheap here and expensive anywhere
+      # else. BOOT_FDT_FILE comes from board/avast-omni.csc; the framework
+      # exits with an error when it is unset.
+      # ------------------------------------------------------------------
+      - name: Validate the device tree (dts-check)
+        working-directory: armbian
+        run: |
+          set -euo pipefail
+          ./compile.sh dts-check \
+            BOARD="${OMNI_BOARD}" \
+            BRANCH="${OMNI_BRANCH}" \
+            KERNEL_CONFIGURE=no \
+            PREFER_DOCKER=no \
+            SHARE_LOG=no \
+            SHOW_LOG=yes \
+            EXPERT=yes
+
+      # ------------------------------------------------------------------
+      # Collect. The debs are the product; Image, the dtb and the kernel
+      # config are extracted FROM them, so what is uploaded is byte-identical
+      # to what the rootfs build will install — not a second copy taken from
+      # the build tree that could differ.
+      # ------------------------------------------------------------------
+      - name: Collect artifacts out of the .debs
+        id: collect
+        run: |
+          set -euo pipefail
+
+          for t in dpkg-deb find file od sha256sum; do
+            command -v "$t" >/dev/null 2>&1 || { echo "::error::required tool '$t' not found"; exit 1; }
+          done
+
+          # SET_OWNER_TO_UID should have covered this; be defensive rather
+          # than fail on a permission error at the last step of a 90 min run.
+          sudo chown -R "$(id -u):$(id -g)" armbian/output 2>/dev/null || true
+
+          out=artifacts
+          rm -rf "$out"
+          mkdir -p "$out/debs"
+
+          # Reversioned debs land in output/debs (artifact_deb_repo="global"
+          # for the kernel artifact, so there is no per-repo subdirectory).
+          # The hashed originals stay in output/packages-hashed and are only
+          # a fallback: same content, build-hash version string.
+          debs=()
+          for dir in armbian/output/debs armbian/output/packages-hashed; do
+            [ -d "$dir" ] || continue
+            mapfile -t debs < <(find "$dir" -type f -name "*-${OMNI_LINUXFAMILY}_*.deb" | sort)
+            [ "${#debs[@]}" -gt 0 ] && { echo "using debs from ${dir}"; break; }
+          done
+
+          if [ "${#debs[@]}" -eq 0 ]; then
+            echo "::error::no *-${OMNI_LINUXFAMILY}_*.deb was produced under armbian/output/"
+            find armbian/output -maxdepth 2 -type d 2>/dev/null | sort || true
+            exit 1
+          fi
+
+          # Exactly the four packages the plan expects. A missing linux-dtb
+          # means the DTS never reached the tree and the box would boot with
+          # no device tree; a missing linux-headers means
+          # KERNEL_HAS_WORKING_HEADERS turned no. Both are silent here and
+          # fatal on the device.
+          declare -A found=()
+          missing=0
+          for pkg in linux-image linux-dtb linux-headers linux-libc-dev; do
+            want="${pkg}-${OMNI_BRANCH}-${OMNI_LINUXFAMILY}"
+            hit=""
+            for d in "${debs[@]}"; do
+              case "$(basename "$d")" in "${want}_"*) hit="$d"; break;; esac
+            done
+            if [ -z "$hit" ]; then
+              echo "::error::expected package '${want}' was not built"
+              missing=1
+            else
+              echo "found ${want}: $(basename "$hit")"
+              found[$pkg]="$hit"
+              cp -p "$hit" "$out/debs/"
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+          # The DTB filename is part of the boot contract: U-Boot loads
+          # /boot/${mender_dtb_name} from inside the selected slot and that
+          # variable is GLOBAL, not per-slot. Read the expected name from the
+          # board config instead of repeating the literal here.
+          fdt=$(awk -F'"' '/^BOOT_FDT_FILE=/{print $2; exit}' "board/${OMNI_BOARD}.csc")
+          [ -n "$fdt" ] || { echo "::error::BOOT_FDT_FILE not found in board/${OMNI_BOARD}.csc"; exit 1; }
+          dtb_name=$(basename "$fdt")
+          echo "expecting dtb: ${dtb_name}  (BOOT_FDT_FILE=${fdt})"
+
+          tmp=$(mktemp -d)
+          trap 'rm -rf -- "$tmp"' EXIT
+
+          dpkg-deb -x "${found[linux-image]}" "$tmp/image"
+          dpkg-deb -x "${found[linux-dtb]}"   "$tmp/dtb"
+
+          # On arm64 `make install` writes the raw Image as boot/vmlinuz-<ver>;
+          # the on-device flatten hook copies exactly this file onto the fixed
+          # name U-Boot loads (mender_kernel_name, "Image").
+          vmlinuz=$(find "$tmp/image/boot" -maxdepth 1 -type f -name 'vmlinu*' | sort | head -n1)
+          [ -n "$vmlinuz" ] || { echo "::error::no boot/vmlinu* inside $(basename "${found[linux-image]}")"; exit 1; }
+          cp -p "$vmlinuz" "$out/Image"
+
+          kconf=$(find "$tmp/image/boot" -maxdepth 1 -type f -name 'config-*' | sort | head -n1)
+          [ -n "$kconf" ] || { echo "::error::no boot/config-* inside $(basename "${found[linux-image]}")"; exit 1; }
+          cp -p "$kconf" "$out/$(basename "$kconf")"
+          echo "kconfig=${out}/$(basename "$kconf")" >> "$GITHUB_OUTPUT"
+
+          dtb=$(find "$tmp/dtb" -type f -name "$dtb_name" | sort | head -n1)
+          if [ -z "$dtb" ]; then
+            echo "::error::${dtb_name} is not in $(basename "${found[linux-dtb]}"). The DTS did not reach arch/arm64/boot/dts/amlogic — check the dts-directories drop in patch/kernel/archive/${OMNI_LINUXFAMILY}-${OMNI_KERNEL_VERSION}/."
+            find "$tmp/dtb" -name '*.dtb' | head -50
+            exit 1
+          fi
+          cp -p "$dtb" "$out/$dtb_name"
+
+          # A zero-length or non-FDT blob survives every file copy and fails
+          # on the device as "board does not boot". d00dfeed is the flat
+          # device tree magic.
+          magic=$(od -An -tx1 -N4 "$out/$dtb_name" | tr -d ' \n')
+          [ "$magic" = "d00dfeed" ] || { echo "::error::${dtb_name} is not a flat device tree (magic=${magic:-empty})"; exit 1; }
+
+          echo "--- collected ---"
+          ls -l "$out" "$out/debs"
+          file "$out/Image" "$out/$dtb_name"
+          ( cd "$out" && sha256sum Image "$dtb_name" debs/*.deb | tee SHA256SUMS )
+
+      # ------------------------------------------------------------------
+      # THE GATE. Run against boot/config-* extracted from the linux-image
+      # deb — the config the kernel in that deb was really built with.
+      #
+      # Do NOT point this at board/linux-meson64-omni.config (a fragment),
+      # at armbian/config/kernel/linux-meson64-*.config, or at
+      # armbian/output/config/*.config. Those are all savedefconfig output:
+      # they omit every symbol that is at its Kconfig default or implied by
+      # another symbol. Verified against the pinned submodule — checking the
+      # synced linux-meson64-current.config reports six failures
+      # (STMMAC_PLATFORM, DWMAC_MESON8B, NEW_LEDS, NF_NAT, SYN_COOKIES,
+      # CGROUPS) that are all present and correct in the real .config. A gate
+      # with false failures gets waived, and then it is not a gate.
+      # ------------------------------------------------------------------
+      - name: Assert kernel-config invariants
+        run: |
+          set -euo pipefail
+          strict=''
+          if [ "${OMNI_STRICT_KCONFIG}" = "true" ]; then
+            strict='--strict'
+            echo "strict: WARN invariants are failures too"
+          else
+            echo "not strict: WARN invariants are reported but do not fail the build"
+          fi
+          bash tools/check-kconfig-invariants.sh --no-color ${strict} "${{ steps.collect.outputs.kconfig }}"
+
+      - name: Upload kernel debs
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          # build-omni-rootfs.yml downloads this artifact BY NAME. Renaming it
+          # breaks that workflow.
+          name: omni-kernel-debs
+          path: artifacts/debs/*.deb
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload Image, dtb and kernel config
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: omni-kernel-boot
+          path: |
+            artifacts/Image
+            artifacts/*.dtb
+            artifacts/config-*
+            artifacts/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Summary
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "### Omni kernel build"
+            echo
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| board | \`${OMNI_BOARD}\` |"
+            echo "| branch | \`${OMNI_BRANCH}\` |"
+            echo "| kernel series | \`${OMNI_KERNEL_VERSION}\` |"
+            echo "| armbian pin | \`$(git -C armbian rev-parse --short=12 HEAD 2>/dev/null || echo unknown)\` |"
+            echo "| strict kconfig | \`${OMNI_STRICT_KCONFIG}\` |"
+            echo
+            if [ -f artifacts/SHA256SUMS ]; then
+              echo '```'
+              cat artifacts/SHA256SUMS
+              echo '```'
+            else
+              echo "_No artifacts were produced — a gate failed before collection._"
+            fi
+            echo
+            echo "No bootloader was built. No device was touched."
+          } >> "$GITHUB_STEP_SUMMARY"

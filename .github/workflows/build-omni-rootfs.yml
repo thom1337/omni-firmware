@@ -1,0 +1,553 @@
+# ==============================================================================
+#  Build Omni Rootfs — the Debian trixie A/B slot image
+# ==============================================================================
+#
+#  WHAT THIS WORKFLOW PROVES
+#  -------------------------
+#   1. rootfs/build-in-docker.sh reproducibly produces omni-slot.ext4.gz from
+#      rootfs/packages.list + rootfs/overlay/ + the kernel .debs built by
+#      build-omni-kernel.yml. Everything except one thing happens inside the
+#      builder container; that one thing is the arm64 binfmt_misc
+#      registration, which is global host-kernel state (mmdebstrap has to
+#      execute arm64 maintainer scripts) and is set up explicitly below.
+#   2. The .sha256 and .size sidecars really describe the UNCOMPRESSED image.
+#      tools/omni-flash.sh checks exactly that on the device, after streaming
+#      `curl | gzip -dc | dd`:
+#          [ "$(head -c "$IMG_SIZE" "$tgt" | sha256sum | cut -d' ' -f1)" = "$IMG_SHA" ]
+#      A truncated build that lies about its own size is the difference
+#      between "the flash script refuses" and "a slot that does not boot".
+#   3. tools/check-image-invariants.sh holds against the REAL artifact: the
+#      image is loop-mounted read-only and checked as a filesystem, not as a
+#      pre-pack staging directory. That covers, among others:
+#        * the ext4 feature set. Debian trixie's e2fsprogs 1.47 turns
+#          metadata_csum_seed and orphan_file on by default (Debian #1072566);
+#          U-Boot 2018.09's ext4 reader predates both. This fails as an
+#          unbootable slot, never as a build error (plan risk 4).
+#        * `test ! -e /usr/bin/armbian-install` — the tool that repartitions
+#          eMMC and rewrites bootloaders must not exist in the image.
+#        * serial autologin on ttyAML0. With no network and no bootloader
+#          prompt, a locked console means the box is gone (plan risk 5).
+#        * the three flattened /boot names, which are GLOBAL U-Boot env vars
+#          shared with the Yocto rollback slot.
+#
+#  WHAT THIS WORKFLOW DELIBERATELY DOES NOT DO
+#  -------------------------------------------
+#   * It NEVER builds or writes U-Boot, and never writes a U-Boot environment
+#     variable. Not one byte of /dev/mmcblk0boot0 is produced here. The env is
+#     a single non-redundant 8 KB copy; only the on-device scripts touch it,
+#     under a serial console.
+#   * It never runs Armbian's image pipeline, so armbian-bsp-cli — and
+#     therefore armbian-install — is structurally impossible in the output.
+#     The kernel .debs are consumed as plain .debs from the kernel workflow.
+#   * It never flashes, arms or commits anything. Producing an image and
+#     installing one are different acts, performed by different scripts
+#     (tools/omni-flash.sh, tools/omni-arm.sh), one of which needs a human
+#     with a serial cable.
+#   * It does not size the slot correctly on its own. The default block count
+#     in rootfs/build-rootfs.sh is a PLACEHOLDER; the real value is p1's block
+#     count from the Phase 0 `dumpe2fs -h /dev/mmcblk0p1` capture. Until that
+#     capture is committed, use the slot_size_mib input, and treat the result
+#     as untested against the partition table.
+#
+#  KERNEL .debs
+#  ------------
+#  Taken from a build-omni-kernel.yml run, by artifact name `omni-kernel-debs`:
+#  either the run id given in the `kernel_run_id` input, or the most recent
+#  successful run on this repo's default branch.
+#
+#  A `workflow_run` trigger was considered and rejected: it executes in the
+#  context of the default branch regardless of which branch produced the
+#  kernel, and it re-fires on every kernel build whether or not the rootfs
+#  changed. An explicit run id is reproducible — you can rebuild the same
+#  rootfs against the same kernel a month later — and "latest successful" is
+#  the same thing a human would do by hand.
+#
+#  No secrets are required. The automatic GITHUB_TOKEN is used read-only, to
+#  list and download artifacts from this same repository.
+# ==============================================================================
+
+name: Build Omni Rootfs
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'rootfs/**'
+      # Same reasoning as the kernel workflow: 'tools/**' pulled in the serial
+      # console helpers and the on-device A/B scripts, which cannot change the
+      # image. Only the invariant checker this job runs is relevant.
+      - 'tools/check-image-invariants.sh'
+      - '.github/workflows/build-omni-rootfs.yml'
+  workflow_dispatch:
+    inputs:
+      kernel_run_id:
+        description: 'Run id of a build-omni-kernel.yml run to take the omni-kernel-debs artifact from. Empty = latest successful run on the default branch.'
+        required: false
+        default: ''
+        type: string
+      slot_size_mib:
+        description: 'Slot size in MiB. Empty = the placeholder default in rootfs/build-rootfs.sh. The correct value is p1s size from the Phase 0 dumpe2fs capture.'
+        required: false
+        default: ''
+        type: string
+      strict:
+        description: 'Pass --strict to check-image-invariants.sh (turns WARN *and* SKIP into failures). Only meaningful once the image is feature-complete.'
+        required: false
+        default: false
+        type: boolean
+      variant:
+        description: 'slot = the 850 MiB A/B rootfs image. recovery = the 450 MiB p7 recovery image (no initrd, pruned modules, boots init=/init).'
+        required: false
+        default: 'slot'
+        type: string
+
+  # Called by release.yml so a tagged release ships the image THIS workflow
+  # built and asserted, rather than a second copy of the build steps that
+  # could drift out of agreement with it. Inputs mirror workflow_dispatch.
+  workflow_call:
+    inputs:
+      kernel_run_id:
+        required: false
+        default: ''
+        type: string
+      slot_size_mib:
+        required: false
+        default: ''
+        type: string
+      strict:
+        required: false
+        default: false
+        type: boolean
+      variant:
+        required: false
+        default: 'slot'
+        type: string
+    outputs:
+      kernel_run_id:
+        description: 'The build-omni-kernel.yml run the .debs actually came from, resolved. The release attaches that run kernel artifacts so an image and its kernel are published together.'
+        value: ${{ jobs.rootfs.outputs.kernel_run_id }}
+
+# The variant is part of the key. In a reusable workflow `github.workflow` is
+# the CALLER's name, so release.yml calling this twice -- once for the slot
+# image and once for the recovery image -- put both jobs in the same group and,
+# with cancel-in-progress, the second immediately cancelled the first:
+#   "Canceling since a higher priority waiting request for Release-... exists"
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.variant || 'slot' }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read          # gh run list / gh run download, same repo only
+
+jobs:
+  rootfs:
+    name: Build image and assert invariants
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    outputs:
+      kernel_run_id: ${{ steps.kernelrun.outputs.run_id }}
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      OMNI_KERNEL_WORKFLOW: build-omni-kernel.yml
+      OMNI_KERNEL_ARTIFACT: omni-kernel-debs
+      OMNI_KERNEL_RUN_ID: ${{ inputs.kernel_run_id }}
+      OMNI_SLOT_SIZE_MIB: ${{ inputs.slot_size_mib }}
+      OMNI_STRICT: ${{ inputs.strict == true }}
+      OMNI_VARIANT: ${{ inputs.variant || 'slot' }}
+      OMNI_NAME: ${{ (inputs.variant == 'recovery') && 'omni-recovery' || 'omni-slot' }}
+      OMNI_OUT: rootfs/out
+      OMNI_DEBS: rootfs/kernel-debs
+      OMNI_MNT: /mnt/omni-slot
+      # A public key is not a secret, so this is a repository *variable*, not a
+      # secret -- which also means it is readable in logs, as intended.
+      OMNI_SSH_PUBKEY: ${{ vars.OMNI_SSH_PUBKEY }}
+
+    steps:
+      # mmdebstrap plus a packed ext4 slot plus Docker layers. root-reserve-mb
+      # is large on purpose: /var/lib/docker lives on / , not on the volume
+      # this action creates.
+      # NO maximize-build-space HERE, deliberately.
+      #
+      # It was failing the job. Measured on the runner:
+      #     before:  /dev/root  145G   58G   88G  40% /
+      #     after:   /dev/root  145G  145G  100M 100% /
+      # It consumed the root filesystem down to 100 MB despite root-reserve-mb,
+      # and /var/lib/docker lives on / -- so the very next step died pulling a
+      # ~50 MB binfmt image with "no space left on device".
+      #
+      # This job does not need it. The whole build is roughly 4 GB: a ~1.5 GB
+      # chroot, the 850 MB image plus its 220 MB gzip, ~380 MB of kernel debs and
+      # the builder container. A stock runner has ~88 GB free. The kernel
+      # workflow is different -- an Armbian tree genuinely needs tens of GB --
+      # which is why it keeps the step.
+
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The rootfs build needs no submodule: Armbian is not involved, and
+          # the Yocto layers are irrelevant. The kernel comes in as .debs.
+          submodules: false
+          persist-credentials: false
+
+      - name: Check preconditions
+        run: |
+          set -euo pipefail
+
+          # Fail here, loudly, rather than 90 seconds later inside docker with
+          # "no space left on device" on a blob write. The whole build is about
+          # 4 GB; 15 GB is a comfortable floor that still catches a runner image
+          # that has grown, or a maximize-build-space step reintroduced above.
+          avail_kb=$(df -Pk / | awk 'NR==2 {print $4}')
+          avail_gb=$(( avail_kb / 1024 / 1024 ))
+          echo "free on /: ${avail_gb} GiB"
+          if [ "$avail_gb" -lt 15 ]; then
+            echo "::error::only ${avail_gb} GiB free on / — this build needs ~4 GiB for the chroot, image and builder container, plus room for /var/lib/docker which lives on /. Something is consuming the root filesystem."
+            df -h / >&2
+            exit 1
+          fi
+
+          missing=0
+          for f in rootfs/build-in-docker.sh rootfs/build-rootfs.sh rootfs/packages.list \
+                   tools/check-image-invariants.sh; do
+            if [ ! -f "$f" ]; then
+              echo "::error::missing $f"
+              missing=1
+            fi
+          done
+          [ -d rootfs/overlay ] || { echo "::error::missing rootfs/overlay/ — an image built with --no-overlay has no flatten hooks and no overlay-root initramfs script, and is NOT bootable"; missing=1; }
+          [ "$missing" -eq 0 ] || exit 1
+
+          for t in gh docker gzip sha256sum stat mount umount; do
+            command -v "$t" >/dev/null 2>&1 || { echo "::error::required tool '$t' not found on the runner"; exit 1; }
+          done
+          docker info >/dev/null 2>&1 || { echo "::error::docker is not usable on this runner"; exit 1; }
+
+      # ------------------------------------------------------------------
+      # arm64 binfmt_misc. This is the one thing rootfs/build-in-docker.sh
+      # cannot containerise, and it says so: mmdebstrap has to EXECUTE arm64
+      # maintainer scripts, and binfmt_misc is global host-kernel state, so
+      # installing qemu inside the container does not help. A stock GitHub
+      # runner has no aarch64 registration; without this step the wrapper
+      # aborts before it ever builds its image.
+      # ------------------------------------------------------------------
+      - name: Register arm64 binfmt_misc on the host
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+        with:
+          platforms: arm64
+
+      - name: Verify the arm64 binfmt registration
+        run: |
+          set -euo pipefail
+          # Same check rootfs/build-in-docker.sh performs, run here so a
+          # missing registration is attributed to the runner and not to the
+          # rootfs build.
+          found=0
+          for reg in /proc/sys/fs/binfmt_misc/qemu-aarch64*; do
+            [ -f "$reg" ] || continue
+            if grep -qx 'enabled' "$reg"; then
+              echo "enabled: $reg"
+              found=1
+            fi
+          done
+          [ "$found" = 1 ] || { echo "::error::no enabled qemu-aarch64 binfmt_misc registration; mmdebstrap cannot run arm64 maintainer scripts"; exit 1; }
+
+      # ------------------------------------------------------------------
+      # Resolve and fetch the kernel .debs.
+      # ------------------------------------------------------------------
+      - name: Resolve the kernel run
+        id: kernelrun
+        run: |
+          set -euo pipefail
+          run_id="${OMNI_KERNEL_RUN_ID}"
+
+          if [ -n "$run_id" ]; then
+            echo "using the run id given on dispatch: ${run_id}"
+          else
+            echo "no kernel_run_id given; looking for the latest successful ${OMNI_KERNEL_WORKFLOW} run on ${{ github.event.repository.default_branch }}"
+            run_id=$(gh run list \
+              --workflow "${OMNI_KERNEL_WORKFLOW}" \
+              --branch "${{ github.event.repository.default_branch }}" \
+              --status success \
+              --limit 1 \
+              --json databaseId \
+              --jq '.[0].databaseId // empty')
+          fi
+
+          if [ -z "$run_id" ]; then
+            echo "::error::no successful ${OMNI_KERNEL_WORKFLOW} run to take kernel .debs from. Run that workflow first, then re-dispatch this one (optionally with kernel_run_id)."
+            exit 1
+          fi
+
+          # Fail loudly on a run that exists but did not succeed, rather than
+          # silently building a slot image around a half-built kernel.
+          conclusion=$(gh run view "$run_id" --json conclusion --jq '.conclusion // empty' || true)
+          if [ "$conclusion" != "success" ]; then
+            echo "::error::kernel run ${run_id} has conclusion '${conclusion:-unknown}', not 'success'"
+            exit 1
+          fi
+
+          echo "kernel run: ${run_id}"
+          # Informational only — never fail the build on a gh field name that
+          # a future CLI release renamed.
+          gh run view "$run_id" --json displayTitle,headSha,createdAt \
+            --jq '"title: \(.displayTitle)\nsha:   \(.headSha)\nwhen:  \(.createdAt)"' || true
+          echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
+
+      - name: Download the kernel .debs
+        run: |
+          set -euo pipefail
+          rm -rf "${OMNI_DEBS}"
+          mkdir -p "${OMNI_DEBS}"
+          gh run download "${{ steps.kernelrun.outputs.run_id }}" \
+            --name "${OMNI_KERNEL_ARTIFACT}" \
+            --dir "${OMNI_DEBS}"
+
+          mapfile -t debs < <(find "${OMNI_DEBS}" -type f -name '*.deb' | sort || true)
+          if [ "${#debs[@]}" -eq 0 ]; then
+            echo "::error::artifact '${OMNI_KERNEL_ARTIFACT}' from run ${{ steps.kernelrun.outputs.run_id }} contains no .deb"
+            exit 1
+          fi
+          printf '  %s\n' "${debs[@]}"
+
+          # linux-image carries /boot/vmlinuz + /lib/modules; linux-dtb carries
+          # the meson-axg-apollo.dtb the flatten hook copies onto the fixed
+          # name U-Boot loads. Without either, the image is not bootable and
+          # the failure would only show up on a device in a closet.
+          for want in linux-image linux-dtb; do
+            found=0
+            for d in "${debs[@]}"; do
+              case "$(basename "$d")" in "${want}-"*) found=1; break;; esac
+            done
+            [ "$found" -eq 1 ] || { echo "::error::no ${want}-*.deb in the kernel artifact"; exit 1; }
+          done
+
+      # ------------------------------------------------------------------
+      # Build. rootfs/build-in-docker.sh runs rootfs/build-rootfs.sh inside
+      # the builder container, so the runner needs no build-dependencies of
+      # its own beyond Docker. Invoked as `bash <path>` so the result does not
+      # depend on the exec bit surviving a checkout.
+      #
+      # --out and --name are deliberately NOT passed: a path on the command
+      # line has to be valid INSIDE the container, and only --kernel-debs is
+      # translated across that boundary by the wrapper (it rewrites a path
+      # under the repo to /workdir/... and bind-mounts anything outside).
+      # build-rootfs.sh derives the rest from its own location, and the
+      # defaults are already exactly what this workflow wants:
+      #     out  -> rootfs/out
+      #     name -> omni-slot
+      # The verification step below fails loudly if either ever moves.
+      # ------------------------------------------------------------------
+      - name: Build the slot image
+        run: |
+          set -euo pipefail
+          # --privileged is required HERE and is not paranoia. mmdebstrap runs
+          # --mode=unshare, which calls newuidmap(1) to write a multi-range
+          # /proc/PID/uid_map. build-in-docker.sh's normal path already passes
+          # seccomp=unconfined + apparmor=unconfined, and that is enough on a
+          # normal workstation -- but on a GitHub runner it still dies with
+          #     newuidmap: write to uid_map failed: Operation not permitted
+          #     E: failed to unshare the user namespace
+          # because the container lacks CAP_SETUID/CAP_SETGID over the host's
+          # subuid ranges. The runner is an ephemeral single-tenant VM that is
+          # destroyed after the job, so the blast radius of --privileged is the
+          # job itself. Do NOT copy this flag into anything that runs on a
+          # shared or long-lived host.
+          args=(--privileged --kernel-debs "${OMNI_DEBS}")
+
+          # The recovery image is not "the slot image, smaller". U-Boot enters
+          # p7 with ramdisk_addr_r cleared and init=/init, so it has no initrd
+          # and no overlay root; and 450 MiB will not hold the stock 212 MiB
+          # module tree beside a usable system, so the modules are pruned to
+          # what this board actually loads. See rootfs/overlay-recovery/.
+          if [ "${OMNI_VARIANT}" = "recovery" ]; then
+            args+=(--blocks 115200
+                   --overlay rootfs/overlay-recovery
+                   --packages rootfs/packages-recovery.list
+                   --no-initramfs
+                   --keep-modules rootfs/modules-recovery.keep
+                   --hostname omni-recovery
+                   --name omni-recovery)
+            echo "building the RECOVERY image (p7, 450 MiB, no initrd, pruned modules)"
+          elif [ "${OMNI_VARIANT}" != "slot" ]; then
+            echo "::error::variant must be 'slot' or 'recovery', got '${OMNI_VARIANT}'"
+            exit 1
+          fi
+
+          # The authorised root key is a build input, never a committed file --
+          # a key in the repo would make every image built from it trust one
+          # person. Set the repository variable OMNI_SSH_PUBKEY (Settings ->
+          # Secrets and variables -> Actions -> Variables) to your public key.
+          #
+          # With it unset the build still succeeds, but produces an image
+          # reachable ONLY over the serial console, and says so loudly rather
+          # than quietly shipping something nobody can log into.
+          if [ -n "${OMNI_SSH_PUBKEY}" ]; then
+            args+=(--ssh-pubkey "${OMNI_SSH_PUBKEY}")
+            echo "authorising the repository's OMNI_SSH_PUBKEY variable"
+          else
+            args+=(--allow-no-ssh-key)
+            echo "::warning::repository variable OMNI_SSH_PUBKEY is not set — this image will have NO authorised SSH key and is reachable only over the serial console. Set it under Settings → Secrets and variables → Actions → Variables."
+          fi
+
+          if [ -n "${OMNI_SLOT_SIZE_MIB}" ]; then
+            case "${OMNI_SLOT_SIZE_MIB}" in
+              ''|*[!0-9]*) echo "::error::slot_size_mib must be a positive integer, got '${OMNI_SLOT_SIZE_MIB}'"; exit 1;;
+            esac
+            args+=(--size-mib "${OMNI_SLOT_SIZE_MIB}")
+          else
+            # See rootfs/build-rootfs.sh --blocks-from: once Phase 0's
+            # `dumpe2fs -h /dev/mmcblk0p1` capture is committed, this workflow
+            # should pass --blocks-from that file instead of relying on the
+            # placeholder default.
+            echo "::warning::no slot_size_mib given — using the PLACEHOLDER block count in rootfs/build-rootfs.sh. The real value is p1's block count from the Phase 0 dumpe2fs capture."
+          fi
+
+          echo "+ bash rootfs/build-in-docker.sh ${args[*]}"
+          bash rootfs/build-in-docker.sh "${args[@]}"
+
+      # ------------------------------------------------------------------
+      # The sidecars are the device-side contract. Verify them here, where a
+      # mismatch costs a red build, rather than on the device, where it costs
+      # a slot.
+      # ------------------------------------------------------------------
+      - name: Verify the image against its own .sha256 and .size
+        run: |
+          set -euo pipefail
+          gz="${OMNI_OUT}/${OMNI_NAME}.ext4.gz"
+          sha_file="${OMNI_OUT}/${OMNI_NAME}.ext4.sha256"
+          size_file="${OMNI_OUT}/${OMNI_NAME}.ext4.size"
+          img="${OMNI_OUT}/${OMNI_NAME}.ext4"
+
+          for f in "$gz" "$sha_file" "$size_file"; do
+            [ -s "$f" ] || { echo "::error::missing or empty $f"; exit 1; }
+          done
+          ls -l "${OMNI_OUT}"
+
+          # Decompress once; every later step reads this file.
+          if [ ! -f "$img" ]; then
+            gzip -dc "$gz" > "$img"
+          fi
+
+          want_size=$(tr -dc '0-9' < "$size_file")
+          got_size=$(stat -c %s "$img")
+          if [ "$want_size" != "$got_size" ]; then
+            echo "::error::.size says ${want_size} bytes, the decompressed image is ${got_size}. omni-flash.sh hashes exactly \$IMG_SIZE bytes off the slot, so this mismatch would compare the wrong range on the device."
+            exit 1
+          fi
+
+          want_sha=$(awk '{print $1; exit}' "$sha_file")
+          got_sha=$(sha256sum "$img" | awk '{print $1}')
+          if [ "$want_sha" != "$got_sha" ]; then
+            echo "::error::.sha256 says ${want_sha}, the decompressed image hashes to ${got_sha}"
+            exit 1
+          fi
+
+          echo "uncompressed: ${got_size} bytes, sha256 ${got_sha}"
+          echo "compressed:   $(stat -c %s "$gz") bytes"
+
+      # ------------------------------------------------------------------
+      # Mount the real artifact read-only and run the full invariant set
+      # against it. Checking a staging directory would only prove what we
+      # meant to pack; this proves what a slot will actually contain.
+      #
+      # noload: never replay a journal on a ro mount. sudo: several of the
+      # files that matter (/etc/shadow, ssh host key placeholders) are 0600
+      # and root-owned; the checker is read-only either way.
+      # ------------------------------------------------------------------
+      - name: Mount the slot image read-only
+        id: mount
+        run: |
+          set -euo pipefail
+          sudo mkdir -p "${OMNI_MNT}"
+          sudo mount -o loop,ro,noload "${OMNI_OUT}/${OMNI_NAME}.ext4" "${OMNI_MNT}"
+          echo "mounted=yes" >> "$GITHUB_OUTPUT"
+          echo "--- / ---"
+          sudo ls -la "${OMNI_MNT}"
+          echo "--- /boot ---"
+          sudo ls -la "${OMNI_MNT}/boot" || true
+
+      - name: Assert image invariants
+        run: |
+          set -euo pipefail
+          strict=''
+          if [ "${OMNI_STRICT}" = "true" ]; then
+            strict='--strict'
+          fi
+          # Plain sudo, not `sudo -E`: nothing here is passed through the
+          # environment, and -E needs a SETENV tag that a runner's sudoers
+          # rule is not required to carry.
+          # Must agree with the build step: if no key was baked in, the checker
+          # would otherwise fail the very image the build deliberately produced.
+          nokey=''
+          if [ -z "${OMNI_SSH_PUBKEY}" ]; then
+            nokey='--allow-no-ssh-key'
+          fi
+          rec=''
+          if [ "${OMNI_VARIANT}" = "recovery" ]; then
+            rec='--recovery'
+          fi
+          sudo bash tools/check-image-invariants.sh --no-color ${strict} ${nokey} ${rec} \
+            --rootfs "${OMNI_MNT}" \
+            --image "${OMNI_OUT}/${OMNI_NAME}.ext4"
+
+      - name: Unmount the slot image
+        if: always() && steps.mount.outputs.mounted == 'yes'
+        run: |
+          set -euo pipefail
+          sudo umount "${OMNI_MNT}" || sudo umount -l "${OMNI_MNT}"
+
+      # The uncompressed image is ~1 GiB of pure duplication; only the .gz and
+      # its sidecars are ever transported. Drop it before the upload so it
+      # cannot be picked up by a future glob.
+      - name: Drop the uncompressed image
+        if: always()
+        run: rm -f "${OMNI_OUT}/${OMNI_NAME}.ext4"
+
+      - name: Upload the image
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: ${{ (inputs.variant == 'recovery') && 'omni-recovery-image' || 'omni-slot-image' }}
+          # Wildcarded rather than repeating the variant expression six times:
+          # the build produces exactly one image per run, named omni-slot or
+          # omni-recovery, and if-no-files-found: error still catches a build
+          # that produced nothing.
+          path: |
+            rootfs/out/*.ext4.gz
+            rootfs/out/*.ext4.sha256
+            rootfs/out/*.ext4.size
+            rootfs/out/*.ext4.gz.sha256
+            rootfs/out/*.manifest
+            rootfs/out/*.packages
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Summary
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "### Omni Debian slot image"
+            echo
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| kernel run | \`${{ steps.kernelrun.outputs.run_id || 'unresolved' }}\` |"
+            echo "| strict image checks | \`${OMNI_STRICT}\` |"
+            echo "| slot size input | \`${OMNI_SLOT_SIZE_MIB:-placeholder default}\` |"
+            echo
+            if [ -f "${OMNI_OUT}/${OMNI_NAME}.ext4.sha256" ]; then
+              echo "sha256 / size of the UNCOMPRESSED image (what tools/omni-flash.sh verifies):"
+              echo '```'
+              cat "${OMNI_OUT}/${OMNI_NAME}.ext4.sha256"
+              cat "${OMNI_OUT}/${OMNI_NAME}.ext4.size"
+              echo '```'
+            else
+              echo "_No image was produced — a gate failed before packing._"
+            fi
+            echo
+            echo "No bootloader was built, no U-Boot environment was written, nothing was flashed."
+          } >> "$GITHUB_STEP_SUMMARY"
