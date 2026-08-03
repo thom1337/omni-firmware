@@ -1,0 +1,38 @@
+# LED triggers for the Avast Omni A/B slots.
+#
+# The board has three LEDs -- apollo:power, apollo:app1, apollo:app2 -- and the
+# kernel can drive them from triggers with no userspace involvement at all,
+# which is the point: they keep working when whatever you would have written to
+# poll them has died.
+#
+# WHY udev AND NOT A UNIT: the trigger is a sysfs attribute of the LED device,
+# so the natural place to set it is when that device appears. systemd-udev-trigger
+# replays "add" for devices that already existed at boot, so this applies on a
+# cold boot as well as a hotplug, with no ordering to get wrong.
+#
+# The assignment, and why:
+#
+#   power -> heartbeat     Visibly pulses, and the rate follows load average. A
+#                          box that is alive looks alive from across the room,
+#                          and a box that has wedged stops breathing -- which is
+#                          information you cannot get from a headless appliance
+#                          any other way.
+#
+#   app1  -> mmc0          eMMC activity. The chosen trigger is deliberately
+#                          mmc0 rather than the generic disk-activity: this
+#                          board has exactly one storage device and everything
+#                          interesting (a flash, an update, a log flush) goes
+#                          through it.
+#
+#   app2  -> panic         Lights ONLY when the kernel panics. This one earns
+#                          its place: journald is Storage=volatile and /var/log
+#                          is a tmpfs, so a panic normally leaves no evidence at
+#                          all. A latched LED turns "it was dead when I found
+#                          it" into "it panicked", without a serial cable.
+#
+# There is deliberately no netdev trigger: this kernel is built without
+# CONFIG_LEDS_TRIGGER_NETDEV, so writing "netdev" here would silently do
+# nothing. Checked on the hardware rather than assumed.
+ACTION=="add", SUBSYSTEM=="leds", KERNEL=="apollo:power", ATTR{trigger}="heartbeat"
+ACTION=="add", SUBSYSTEM=="leds", KERNEL=="apollo:app1",  ATTR{trigger}="mmc0"
+ACTION=="add", SUBSYSTEM=="leds", KERNEL=="apollo:app2",  ATTR{trigger}="panic"

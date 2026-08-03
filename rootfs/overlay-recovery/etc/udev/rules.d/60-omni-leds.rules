@@ -1,0 +1,24 @@
+# LED triggers for the Avast Omni RECOVERY slot (p7).
+#
+# Deliberately DIFFERENT from the A/B slots' rules, so the LED pattern answers
+# "which slot am I on?" without a login. On a headless appliance that is the
+# only signal available before you have a shell, and knowing you are in
+# recovery changes what you should do next.
+#
+#   A/B slots:  power breathing, app1 flickering with eMMC, app2 dark
+#   recovery:   power breathing, app1 AND app2 SOLID
+#
+# Two steady lights that are never both on in normal operation. You can see it
+# across a room, through a cupboard door, without a serial cable.
+#
+#   power -> heartbeat     Still means "alive", same as the A/B slots. Recovery
+#                          having a different liveness signal would be actively
+#                          confusing.
+#   app1  -> default-on    Solid. Together with app2 this is the recovery tell.
+#   app2  -> default-on    Not "panic" as in the A/B rules: in recovery the
+#                          steady pair is worth more than a panic indicator, and
+#                          if this slot panics you are already at the bottom of
+#                          the recovery ladder with a serial cable in hand.
+ACTION=="add", SUBSYSTEM=="leds", KERNEL=="apollo:power", ATTR{trigger}="heartbeat"
+ACTION=="add", SUBSYSTEM=="leds", KERNEL=="apollo:app1",  ATTR{trigger}="default-on"
+ACTION=="add", SUBSYSTEM=="leds", KERNEL=="apollo:app2",  ATTR{trigger}="default-on"
