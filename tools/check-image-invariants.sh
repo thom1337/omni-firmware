@@ -169,8 +169,9 @@ Options:
       --no-color / --color
 
 The three /boot names are read from the image's own
-/etc/default/omni-boot (OMNI_KERNEL_NAME / OMNI_DTB_NAME / OMNI_RAMDISK_NAME,
-MENDER_* also accepted), which the plan requires to be populated from Phase 0's
+/etc/default/omni-boot (OMNI_KERNEL_NAME / OMNI_DTB_NAME / OMNI_INITRD_NAME,
+with OMNI_RAMDISK_NAME and MENDER_* also accepted for the ramdisk), which the
+plan requires to be populated from Phase 0's
 \`fw_printenv\`, never from literals. The --*-name options and the compiled
 defaults are a loud last resort.
 
@@ -660,7 +661,7 @@ check_fstab_cgroup() {
 BOOT_NAME_SOURCE=""
 KN=""; DN=""; RN=""
 
-read_omni_boot_var() { # $1 = content, $2 = primary var, $3 = alias var
+read_omni_boot_var() { # $1 = content, $2.. = accepted var names, first match wins by last-set
 	local c=$1 v="" line key val
 	while IFS= read -r line; do
 		case "${line## }" in '' | '#'*) continue ;; esac
@@ -674,7 +675,9 @@ read_omni_boot_var() { # $1 = content, $2 = primary var, $3 = alias var
 		\"*\") val=${val#\"}; val=${val%\"} ;;
 		\'*\') val=${val#\'}; val=${val%\'} ;;
 		esac
-		if [ "$key" = "$2" ] || [ "$key" = "$3" ]; then v=$val; fi
+		for want in "${@:2}"; do
+			if [ "$key" = "$want" ]; then v=$val; fi
+		done
 	done <<<"$c"
 	printf '%s' "$v"
 }
@@ -685,7 +688,12 @@ check_omni_boot_defaults() {
 		c=$(r_cat /etc/default/omni-boot || true)
 		KN=$(read_omni_boot_var "$c" OMNI_KERNEL_NAME MENDER_KERNEL_NAME)
 		DN=$(read_omni_boot_var "$c" OMNI_DTB_NAME MENDER_DTB_NAME)
-		RN=$(read_omni_boot_var "$c" OMNI_RAMDISK_NAME MENDER_RAMDISK_NAME)
+		# OMNI_INITRD_NAME first: that is the name /usr/lib/omni/omni-flatten
+		# actually reads and the one /etc/default/omni-boot ships, so a checker
+		# that knew only OMNI_RAMDISK_NAME reported a correct file as
+		# "incomplete (ramdisk='')". build-rootfs.sh accepts the same three
+		# spellings in this order -- keep them in step.
+		RN=$(read_omni_boot_var "$c" OMNI_INITRD_NAME OMNI_RAMDISK_NAME MENDER_RAMDISK_NAME)
 		if [ -n "$KN" ] && [ -n "$DN" ] && [ -n "$RN" ]; then
 			BOOT_NAME_SOURCE=/etc/default/omni-boot
 			ok "/etc/default/omni-boot defines all three names ($KN, $DN, $RN)"
