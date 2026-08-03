@@ -1,0 +1,112 @@
+#!/bin/sh
+# /usr/lib/omni/omni-ssh-hostkeys -- seed persistent sshd host keys on /data.
+#
+# /etc is per-slot state living in the overlay upper (p5/p6).  Host keys there
+# change when the A/B pointer flips, so every rollback looks like a
+# man-in-the-middle attack to every client that ever connected.  Moving them to
+# /data (p3, shared, not A/B protected) fixes that -- but only if the keys
+# actually exist before sshd reads its config.
+#
+# Ordered Before=ssh.service by omni-ssh-hostkeys.service.
+#
+# Fails SAFE: if /data is not mounted, or ssh-keygen is missing, it does nothing
+# and returns success.  /etc/ssh/sshd_config.d/10-omni.conf lists the per-slot
+# /etc keys as a fallback, so sshd still starts.  Never make this a hard
+# dependency of sshd -- "no /data" must degrade the box, not silence it.
+#
+# Must be mode 0755.
+
+set -eu
+
+PROG=omni-ssh-hostkeys
+DATA_SSH=${OMNI_DATA_SSH:-/data/ssh}
+DRYRUN=0
+
+usage() {
+	cat <<'EOF'
+Usage: omni-ssh-hostkeys [options]
+
+Generate the persistent sshd host keys under /data/ssh if they are missing, so
+the SSH fingerprint survives an A/B slot flip.  Idempotent: existing keys are
+never regenerated or overwritten.
+
+Options:
+  -n, --dry-run    report what would happen, change nothing
+  -h, --help       this text
+
+Exit status: always 0 unless an argument is invalid.  A missing /data, a
+read-only /data or a missing ssh-keygen are reported and tolerated -- sshd falls
+back to the per-slot keys in /etc/ssh.
+EOF
+}
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-n|--dry-run) DRYRUN=1 ;;
+	-h|--help)    usage; exit 0 ;;
+	*)            printf '%s: unknown option %s\n' "$PROG" "$1" >&2; usage >&2; exit 1 ;;
+	esac
+	shift
+done
+
+log() { printf '%s: %s\n' "$PROG" "$*"; }
+
+if ! command -v ssh-keygen >/dev/null 2>&1; then
+	log "ssh-keygen not installed; leaving sshd on its per-slot /etc/ssh keys"
+	exit 0
+fi
+
+# /data must be a real mount, not a directory sitting in the overlay upper --
+# writing keys into the upper would recreate exactly the per-slot problem this
+# script exists to solve, and they would be wiped by the next slot flash.
+data_root=${DATA_SSH%/*}
+if ! grep -q " ${data_root} " /proc/mounts 2>/dev/null; then
+	log "$data_root is not a mount point; not seeding persistent host keys"
+	log "(sshd will use the per-slot keys in /etc/ssh -- fingerprints change on an A/B flip)"
+	exit 0
+fi
+
+if [ "$DRYRUN" = 1 ]; then
+	log "[dry-run] would ensure $DATA_SSH exists 0700 root:root"
+else
+	mkdir -p "$DATA_SSH" || { log "cannot create $DATA_SSH; skipping"; exit 0; }
+	chmod 0700 "$DATA_SSH" 2>/dev/null || :
+	chown 0:0  "$DATA_SSH" 2>/dev/null || :
+fi
+
+# Ed25519 first (small, fast on a Cortex-A53); RSA as the compatibility fallback
+# for whatever ancient client turns up during a recovery.
+for spec in "ed25519 ssh_host_ed25519_key" "rsa ssh_host_rsa_key"; do
+	type=${spec%% *}
+	name=${spec##* }
+	key="$DATA_SSH/$name"
+
+	if [ -f "$key" ]; then
+		# Repair permissions only; never touch the key material.
+		[ "$DRYRUN" = 1 ] || chmod 0600 "$key" 2>/dev/null || :
+		[ "$DRYRUN" = 1 ] || { [ -f "$key.pub" ] && chmod 0644 "$key.pub" 2>/dev/null; } || :
+		continue
+	fi
+
+	if [ "$DRYRUN" = 1 ]; then
+		log "[dry-run] would generate $type host key at $key"
+		continue
+	fi
+
+	# -N '' : no passphrase (sshd cannot prompt).  -q : quiet.  No interaction.
+	if [ "$type" = rsa ]; then
+		set -- -t rsa -b 3072
+	else
+		set -- -t "$type"
+	fi
+	if ssh-keygen "$@" -f "$key" -N '' -C "omni-$(cat /etc/machine-id 2>/dev/null || echo unknown)" -q </dev/null; then
+		chmod 0600 "$key" 2>/dev/null || :
+		chmod 0644 "$key.pub" 2>/dev/null || :
+		log "generated persistent $type host key at $key"
+	else
+		log "WARNING: could not generate $type host key at $key (continuing)"
+		rm -f "$key" "$key.pub" 2>/dev/null || :
+	fi
+done
+
+exit 0

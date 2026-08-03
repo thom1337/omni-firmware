@@ -1,0 +1,88 @@
+#!/bin/sh
+# /etc/kernel/postrm.d/zz-omni-flatten
+#
+# The REMOVAL half of the flatten contract. Its sibling
+# /etc/kernel/postinst.d/zz-omni-flatten runs when a kernel deb is installed and
+# copies that version onto the three fixed mender names in /boot. This one runs
+# when a kernel deb is removed.
+#
+# It is deliberately NOT the same script. The postinst hook flattens the version
+# in $1; doing that here would try to copy the kernel that is being deleted --
+# its /boot/vmlinuz-$1 is already gone, so omni-flatten would die and leave the
+# package removal half-finished. What is wanted on removal is the opposite:
+# re-flatten from the newest kernel that SURVIVES, so /boot/Image and friends
+# always name a kernel that still exists on disk.
+#
+# WHY THIS MATTERS ON THIS BOX: U-Boot loads fixed names from /boot via
+# ext4load (see /etc/default/omni-boot). Those names are copies, not symlinks,
+# so nothing about removing a deb updates them. Purge the kernel that /boot was
+# flattened from and the slot still boots -- until the next flatten, when the
+# stale copy silently disagrees with /usr/lib/modules. Re-flattening here keeps
+# the kernel in /boot and the modules on disk the same version.
+#
+# Debian hook contract: $1 = version being removed. postrm passes no image path.
+set -eu
+
+usage() {
+	cat <<'USAGE'
+Usage: zz-omni-flatten <kernel-version>
+
+Debian /etc/kernel/postrm.d hook for the Avast Omni.  Re-flattens /boot from
+the newest kernel remaining after <kernel-version> has been removed, so the
+fixed names U-Boot loads never point at a kernel that is no longer installed.
+See /etc/default/omni-boot and /usr/lib/omni/omni-flatten.
+USAGE
+}
+
+case "${1:-}" in
+-h|--help)
+	usage
+	exit 0
+	;;
+esac
+
+if [ $# -lt 1 ] || [ -z "${1:-}" ]; then
+	echo "zz-omni-flatten(postrm): ERROR: no kernel version passed as \$1." >&2
+	usage >&2
+	exit 1
+fi
+
+removed=$1
+
+FLATTEN=/usr/lib/omni/omni-flatten
+if [ ! -x "$FLATTEN" ]; then
+	# A missing flatten tool must not abort a package removal -- dpkg would be
+	# left in a half-configured state, which is far worse than a stale /boot.
+	echo "zz-omni-flatten(postrm): WARNING: $FLATTEN missing; /boot left as-is." >&2
+	exit 0
+fi
+
+# Survivors, newest first. find_kernel() in omni-flatten resolves a version via
+# /boot/vmlinuz-$ver, so that is the same set it will be able to flatten from.
+newest=""
+for k in /boot/vmlinuz-*; do
+	[ -f "$k" ] || continue
+	v=${k#/boot/vmlinuz-}
+	[ "$v" = "$removed" ] && continue
+	if [ -z "$newest" ] || [ "$(printf '%s\n%s\n' "$newest" "$v" | sort -V | tail -1)" = "$v" ]; then
+		newest=$v
+	fi
+done
+
+if [ -z "$newest" ]; then
+	# Removing the last kernel. Leaving the existing /boot copies alone is the
+	# only safe move: they are what this slot boots from, and the A/B partner
+	# is untouched. Say so loudly rather than silently doing nothing.
+	echo "zz-omni-flatten(postrm): WARNING: '$removed' was the last kernel in /boot." >&2
+	echo "zz-omni-flatten(postrm): keeping the existing /boot copies -- this slot has no other kernel to flatten from." >&2
+	exit 0
+fi
+
+echo "zz-omni-flatten(postrm): '$removed' removed; re-flattening /boot from '$newest'."
+
+set -- kernel "$newest"
+if [ "${OMNI_FLATTEN_DRY_RUN:-0}" = 1 ]; then
+	set -- kernel --dry-run "$newest"
+fi
+
+exec "$FLATTEN" "$@"

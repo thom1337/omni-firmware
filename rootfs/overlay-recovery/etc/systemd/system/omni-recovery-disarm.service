@@ -1,0 +1,25 @@
+[Unit]
+Description=Clear force_hard_recovery so the recovery slot is a visit, not a destination
+Documentation=file:/usr/lib/omni/omni-recovery-disarm
+DefaultDependencies=no
+# Needs /dev/mmcblk0boot0 and a writable /sys, nothing else. Runs as early as
+# it usefully can: the whole point is that a box which reaches recovery and
+# then loses power still comes back to the A/B slots.
+After=systemd-remount-fs.service local-fs.target
+Before=sysinit.target multi-user.target
+ConditionPathExists=/etc/fw_env.config
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/omni/omni-recovery-disarm
+# Never block the recovery slot from booting: being unable to disarm is bad,
+# but not booting the thing you booted to fix the box is worse. The script
+# says so loudly on the console instead.
+SuccessExitStatus=0 1
+StandardOutput=journal+console
+StandardError=journal+console
+SyslogIdentifier=omni-recovery-disarm
+
+[Install]
+WantedBy=sysinit.target

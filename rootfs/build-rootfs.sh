@@ -91,6 +91,11 @@ KERNEL_NAME=Image
 DTB_NAME=meson-axg-apollo.dtb
 RAMDISK_NAME=apollo-initramfs-image-meson-apollo.cpio.gz
 ASSERT_BOOT=1
+# The recovery slot (p7) is booted with ramdisk_addr_r cleared and init=/init,
+# so no initrd is loaded on that path at all. Building one wastes ~30 MiB in a
+# 450 MiB partition, and asserting one exists fails a perfectly good image.
+NO_INITRAMFS=0
+KEEP_MODULES=""
 ALLOW_UNVERIFIED=0
 
 KEEP_IMAGE=0
@@ -196,6 +201,13 @@ IMAGE CONTENT
   --kernel-name N       default ${KERNEL_NAME}
   --dtb-name N          default ${DTB_NAME}
   --ramdisk-name N      default ${RAMDISK_NAME}
+  --no-initramfs        build no initrd and do not require one under /boot. For
+                        the recovery slot, whose U-Boot path clears
+                        ramdisk_addr_r and boots init=/init directly.
+  --keep-modules FILE   prune /usr/lib/modules to the modules named in FILE plus
+                        their dependencies (resolved via modules.dep), then
+                        re-run depmod. For the 450 MiB recovery slot, where the
+                        stock 212 MiB module tree does not fit.
   --no-assert-boot      do not fail when /boot/<kernel|dtb|ramdisk> are missing
   --allow-unverified-boot-names
                         build even though the overlay's /etc/default/omni-boot still has
@@ -268,6 +280,8 @@ while [ $# -gt 0 ]; do
 	--dtb-name)         DTB_NAME=${2:?--dtb-name needs a value}; shift 2;;
 	--ramdisk-name)     RAMDISK_NAME=${2:?--ramdisk-name needs a value}; shift 2;;
 	--no-assert-boot)   ASSERT_BOOT=0; shift;;
+	--no-initramfs)     NO_INITRAMFS=1; shift;;
+	--keep-modules)     KEEP_MODULES=${2:?--keep-modules needs a value}; shift 2;;
 	--allow-unverified-boot-names) ALLOW_UNVERIFIED=1; shift;;
 	--out)              OUT_DIR=${2:?--out needs a value}; shift 2;;
 	--work)             WORK_DIR=${2:?--work needs a value}; shift 2;;
@@ -819,6 +833,8 @@ chroot "$chroot_dir" env \
 	OMNI_RAMDISK_NAME_DEFAULT="${OMNI_RAMDISK_NAME_DEFAULT:?}" \
 	OMNI_ASSERT_BOOT="${OMNI_ASSERT_BOOT:-1}" \
 	OMNI_ALLOW_UNVERIFIED="${OMNI_ALLOW_UNVERIFIED:-0}" \
+	OMNI_NO_INITRD="${OMNI_NO_INITRD:-0}" \
+	OMNI_KEEP_MODULES="${OMNI_KEEP_MODULES:-}" \
 	/bin/sh -s <<'IN_CHROOT'
 set -eu
 
@@ -868,7 +884,9 @@ ver=$(ls -1 /boot/vmlinuz-* 2>/dev/null | sed 's|.*/vmlinuz-||' | sort -V | tail
 [ -n "$ver" ] || { echo "E: 50-boot: no /boot/vmlinuz-* — the kernel deb did not install" >&2; exit 1; }
 echo "I: 50-boot: kernel version ${ver}"
 
-if command -v update-initramfs >/dev/null 2>&1; then
+if [ "${OMNI_NO_INITRD:-0}" = 1 ]; then
+	echo "I: 50-boot: --no-initramfs: not building an initrd (recovery boot path clears ramdisk_addr_r)"
+elif command -v update-initramfs >/dev/null 2>&1; then
 	if [ -f "/boot/initrd.img-${ver}" ]; then
 		update-initramfs -u -k "$ver"
 	else
@@ -928,10 +946,90 @@ if dtb_found=$(find_dtb "$dname"); then
 else
 	echo "W: 50-boot: no ${dname} found anywhere under /boot or /usr/lib/linux-image-*" >&2
 fi
-place "/boot/initrd.img-${ver}" "$rname"
+if [ "${OMNI_NO_INITRD:-0}" = 1 ]; then
+	echo "I: 50-boot: --no-initramfs: skipping ${rname}"
+	CHECK_NAMES="$kname $dname"
+	# initramfs-tools arrives as a linux-image dependency whether or not it is
+	# wanted, and its postinst builds an initrd regardless. On a 450 MiB slot
+	# that is 22 MiB for the initrd plus another 22 MiB once the flatten hook
+	# copies it to the mender name -- 44 MiB of a file this boot path never
+	# loads, because U-Boot clears ramdisk_addr_r before entering p7.
+	for stale in "/boot/initrd.img-${ver}" "/boot/${rname}"; do
+		if [ -f "$stale" ]; then
+			echo "I: 50-boot: --no-initramfs: removing unused $stale ($(stat -c%s "$stale") bytes)"
+			rm -f "$stale"
+		fi
+	done
+else
+	place "/boot/initrd.img-${ver}" "$rname"
+	CHECK_NAMES="$kname $dname $rname"
+fi
+
+# --- module pruning ---------------------------------------------------------
+# Keep only the named modules and their dependencies. The full tree is 212 MiB
+# against a 450 MiB partition; the rest of a usable recovery system does not fit
+# beside it. Dependencies are resolved through modules.dep rather than by name
+# matching, because deleting a dependency of a module you kept produces a module
+# that silently fails to load at the worst possible moment.
+if [ -n "${OMNI_KEEP_MODULES:-}" ]; then
+	KDIR="/usr/lib/modules/${ver}"
+	if [ ! -f "$KDIR/modules.dep" ]; then
+		echo "E: 50-boot: --keep-modules given but $KDIR/modules.dep is missing" >&2
+		exit 1
+	fi
+	before=$(du -sk "$KDIR" | awk '{print $1}')
+
+	# Seed: requested names -> their paths in modules.dep.
+	: > /tmp/omni-keep-paths
+	printf '%s\n' "$OMNI_KEEP_MODULES" | while IFS= read -r m; do
+		[ -n "$m" ] || continue
+		# Module names use _ and - interchangeably; modules.dep uses the filename.
+		alt=$(printf '%s' "$m" | tr '_' '-')
+		awk -v a="/${m}.ko" -v b="/${alt}.ko" -F: '
+			{ p=$1 }
+			index(p, a) || index(p, b) { print p }' "$KDIR/modules.dep"
+	done | sort -u > /tmp/omni-keep-paths
+
+	# Transitive closure: a line "path: dep1 dep2" means path needs dep1 dep2.
+	rounds=0
+	while [ "$rounds" -lt 12 ]; do
+		n_before=$(wc -l < /tmp/omni-keep-paths)
+		awk -F: 'NR==FNR { want[$1]=1; next }
+		         ($1 in want) { for (i=2; i<=NF; i++) { gsub(/^ +/, "", $i); split($i, a, " ");
+		                          for (j in a) if (a[j] != "") print a[j] } }' \
+			/tmp/omni-keep-paths "$KDIR/modules.dep" >> /tmp/omni-keep-paths 2>/dev/null || true
+		sort -u -o /tmp/omni-keep-paths /tmp/omni-keep-paths
+		n_after=$(wc -l < /tmp/omni-keep-paths)
+		[ "$n_before" = "$n_after" ] && break
+		rounds=$((rounds + 1))
+	done
+	echo "I: 50-boot: keeping $(wc -l < /tmp/omni-keep-paths) modules (after $rounds dependency passes)"
+
+	# Delete every .ko not in the keep set.
+	#
+	# One awk pass and one xargs, NOT a shell loop with a grep and a sed per
+	# file. This hook runs inside an arm64 chroot under qemu-user on an x86
+	# host, where every fork is emulated: the obvious per-file loop is ~13,000
+	# emulated process spawns for a 4,400-module tree and takes longer than the
+	# rest of the build put together.
+	( cd "$KDIR" && find . -name '*.ko*' -type f | sed 's|^\./||' ) > /tmp/omni-all-mods
+	awk 'NR==FNR { keep[$0]=1; next }
+	     { b=$0; sub(/\.(zst|xz|gz)$/, "", b); if (!(b in keep)) print }' \
+		/tmp/omni-keep-paths /tmp/omni-all-mods > /tmp/omni-del-mods
+	deleted=$(wc -l < /tmp/omni-del-mods)
+	( cd "$KDIR" && xargs -r rm -f < /tmp/omni-del-mods )
+	find "$KDIR" -type d -empty -delete 2>/dev/null || true
+
+	if command -v depmod >/dev/null 2>&1; then
+		depmod -a "$ver" || echo "W: 50-boot: depmod failed after pruning" >&2
+	fi
+	after=$(du -sk "$KDIR" | awk '{print $1}')
+	echo "I: 50-boot: pruned $deleted modules; $KDIR ${before} KiB -> ${after} KiB"
+	rm -f /tmp/omni-keep-paths /tmp/omni-all-mods /tmp/omni-del-mods
+fi
 
 rc=0
-for f in "$kname" "$dname" "$rname"; do
+for f in $CHECK_NAMES; do
 	if [ -f "/boot/$f" ] && [ -s "/boot/$f" ] && [ ! -L "/boot/$f" ]; then
 		printf 'I: 50-boot: /boot/%-52s %10d bytes\n' "$f" "$(stat -c%s "/boot/$f")"
 	else
@@ -1196,6 +1294,16 @@ export OMNI_KERNEL_NAME_DEFAULT="$KERNEL_NAME"
 export OMNI_DTB_NAME_DEFAULT="$DTB_NAME"
 export OMNI_RAMDISK_NAME_DEFAULT="$RAMDISK_NAME"
 export OMNI_ASSERT_BOOT="$ASSERT_BOOT"
+export OMNI_NO_INITRD="$NO_INITRAMFS"
+# Passed as the LIST, not the path: the hook runs inside the chroot, where the
+# file on the build host does not exist.
+if [ -n "$KEEP_MODULES" ]; then
+	[ -r "$KEEP_MODULES" ] || die "--keep-modules: not readable: $KEEP_MODULES"
+	OMNI_KEEP_MODULES=$(grep -vE '^\s*#|^\s*$' "$KEEP_MODULES" || true)
+	[ -n "$OMNI_KEEP_MODULES" ] || die "--keep-modules: $KEEP_MODULES lists no modules"
+	export OMNI_KEEP_MODULES
+	info "pruning modules to $(printf '%s\n' "$OMNI_KEEP_MODULES" | wc -l) named + dependencies"
+fi
 export OMNI_ALLOW_UNVERIFIED="$ALLOW_UNVERIFIED"
 export OMNI_FORBIDDEN="${FORBIDDEN_PACKAGES[*]}"
 export OMNI_SSH_KEYS="$SSH_KEYS_RESOLVED"

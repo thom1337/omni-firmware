@@ -1,0 +1,23 @@
+[Unit]
+Description=Enrol this Omni on its tailnet from a key on /data (first boot only)
+Documentation=file:/usr/lib/omni/omni-tailscale-auth
+# tailscaled must be up to talk to, and /data must be mounted because BOTH the
+# auth key and the persistent state live there.
+After=tailscaled.service network-online.target
+Wants=network-online.target
+Requires=tailscaled.service
+RequiresMountsFor=/data
+# Nothing to do if tailscale was never installed in this image.
+ConditionPathExists=/usr/bin/tailscale
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+ExecStart=/usr/lib/omni/omni-tailscale-auth
+# Enrolment is not required for the box to be useful -- it still has the serial
+# console and, once cabled, plain DHCP. A failure here must never block boot.
+SuccessExitStatus=0 1
+TimeoutStartSec=150
+
+[Install]
+WantedBy=multi-user.target

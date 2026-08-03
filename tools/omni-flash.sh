@@ -60,7 +60,10 @@ REQUIRED
                   cannot produce the right byte count AND the right digest.
 
 OPTIONS
-  --slot N            target slot (1 or 2).  Default: the inactive slot.
+  --slot N            target slot (1 or 2), or 7 for the RECOVERY partition.
+                      Default: the inactive A/B slot.  With 7, no overlay upper
+                      is wiped and the boot pointer is never moved -- U-Boot
+                      reaches p7 on its own.
   --compression C     auto|none|gzip|xz|zstd   (default: auto, from the name)
   --stage MODE        auto|yes|no  (default auto).  "yes" downloads the image to
                       --stage-dir first, so a network that dies mid-transfer
@@ -366,18 +369,39 @@ log "running slot:                   $(describe_running_slot)"
 if [ -z "$TARGET" ]; then
     TARGET=$(other_slot "$ACTIVE") || die "cannot derive the inactive slot from mender_boot_part=$ACTIVE"
 fi
-is_valid_slot "$TARGET" || die "--slot must be $OMNI_SLOT_A or $OMNI_SLOT_B, got '$TARGET'"
+# p7 is the RECOVERY partition, not an A/B slot. It is a legitimate target --
+# it is where a recovery rootfs is installed -- but almost none of the A/B
+# machinery applies to it: it has no overlay upper (p7+4 does not exist), it is
+# never armed, and the boot pointer must never be moved to it. U-Boot reaches it
+# on its own from the reset button, a watchdog latch, or force_hard_recovery.
+RECOVERY_TARGET=0
+if [ "$TARGET" = "$OMNI_RECOVERY_PART" ]; then
+    RECOVERY_TARGET=1
+    DO_ARM=0            # p7 is never armed: the boot pointer must not move to it
+    DO_OVERLAY_MKFS=0   # p7 has no overlay upper to wipe
+    log "target is p$OMNI_RECOVERY_PART: the RECOVERY partition, not an A/B slot"
+    log "  no overlay upper is touched, and the boot pointer is NEVER moved."
+    log "  U-Boot enters p$OMNI_RECOVERY_PART by itself: reset button, watchdog latch, or"
+    log "  force_hard_recovery=1. Nothing here arms anything."
+else
+    is_valid_slot "$TARGET" || die "--slot must be $OMNI_SLOT_A, $OMNI_SLOT_B or $OMNI_RECOVERY_PART (recovery), got '$TARGET'"
+fi
 [ "$TARGET" != "$ACTIVE" ] || die "refusing to flash p$TARGET: it is the ACTIVE slot"
 if [ -n "$RUNNING" ]; then
     [ "$TARGET" != "$RUNNING" ] || die "refusing to flash p$TARGET: it is the RUNNING root filesystem"
 fi
 
 TGT_DEV=$(slot_dev "$TARGET")
-OVL_NO=$(overlay_part "$TARGET")
-OVL_DEV=$(overlay_dev "$TARGET")
-
 need_blockdev "$TGT_DEV" "target slot p$TARGET"
 assert_not_mounted "$TGT_DEV" "target slot p$TARGET"
+
+if [ "$RECOVERY_TARGET" = 1 ]; then
+    # p7 has no overlay upper -- overlay_part() would compute p11, which does
+    # not exist. Skip the whole overlay derivation and its guards.
+    OVL_DEV=""; OVL_NO=""
+else
+OVL_NO=$(overlay_part "$TARGET")
+OVL_DEV=$(overlay_dev "$TARGET")
 
 # Overlay guards.  The overlay upper is ROOT_PART_NO + 4, i.e. p5 for slot A
 # and p6 for slot B.  Anything else here would be catastrophic: p3 is /data and
@@ -396,10 +420,15 @@ if [ "$DO_OVERLAY_MKFS" = "1" ]; then
     ACTIVE_OVL=$(overlay_dev "$ACTIVE")
     [ "$OVL_DEV" != "$ACTIVE_OVL" ] || die "target overlay $OVL_DEV is the ACTIVE slot's overlay - refusing"
 fi
+fi
 
 TGT_SIZE=$(dev_size_bytes "$TGT_DEV") || die "cannot determine the size of $TGT_DEV"
 log "target slot p$TARGET   $TGT_DEV   $(human_bytes "$TGT_SIZE") ($TGT_SIZE bytes)"
-log "target overlay p$OVL_NO $OVL_DEV"
+if [ "$RECOVERY_TARGET" = 1 ]; then
+    log "target overlay        none (p$OMNI_RECOVERY_PART has no overlay upper)"
+else
+    log "target overlay p$OVL_NO $OVL_DEV"
+fi
 log "image size             $(human_bytes "$IMG_SIZE") ($IMG_SIZE bytes)"
 log "image sha256           $IMG_SHA"
 if [ "$IMG_SIZE" -gt "$TGT_SIZE" ]; then
@@ -643,7 +672,11 @@ fi
 # ===========================================================================
 # DESTRUCTIVE FROM HERE ON - target slot only
 # ===========================================================================
-banner "wipe the target slot's overlay upper (p$OVL_NO)"
+if [ "$RECOVERY_TARGET" = 1 ]; then
+    banner "overlay upper: none (p$OMNI_RECOVERY_PART is the recovery partition)"
+else
+    banner "wipe the target slot's overlay upper (p$OVL_NO)"
+fi
 
 mke2fs_accepts() {
     # Probe whether this mke2fs understands "-O ^<feature>" without touching
@@ -824,7 +857,22 @@ if [ "$DO_ARM" = "0" ]; then
     log "    setenv bootargs root=$TGT_DEV rootwait rw console=ttyAML0 panic=10"
     log "    booti \${kernel_addr_r} \${ramdisk_addr_r}:\${filesize} \${fdt_addr_r}"
     log "  (never 'saveenv' at the prompt - MENDER_BOOTARGS prepends its own root=)"
-    log "Or arm it later with:  $OMNI_DIR/omni-arm.sh --slot $TARGET"
+    if [ "$RECOVERY_TARGET" = 1 ]; then
+        # Emphatically NOT omni-arm.sh: arming sets mender_boot_part=7, which
+        # makes recovery the permanent boot target rather than a detour. The
+        # supported ways in are the reset button, a watchdog latch, and
+        # force_hard_recovery=1 -- and the recovery image clears that flag on
+        # boot, so it is a visit rather than a one-way trip.
+        log ""
+        log "Do NOT arm p$OMNI_RECOVERY_PART. Arming would set mender_boot_part=$OMNI_RECOVERY_PART and make"
+        log "recovery the permanent boot target. U-Boot reaches it on its own."
+        log "To enter recovery deliberately, from a running system:"
+        log "    fw_setenv force_hard_recovery 1 && reboot"
+        log "  (the recovery image clears that flag on boot, so the NEXT reboot"
+        log "   returns to mender_boot_part=p$ACTIVE)"
+    else
+        log "Or arm it later with:  $OMNI_DIR/omni-arm.sh --slot $TARGET"
+    fi
     exit 0
 fi
 

@@ -1,0 +1,15 @@
+#!/bin/sh
+# /init - PID 1 entry point for the RECOVERY slot (p7).
+#
+# U-Boot's recovery paths (reset button, watchdog latch, force_hard_recovery)
+# all boot p7 with "init=/init" prepended to bootargs, so this path must exist
+# and must be executable or the slot does not boot at all. See
+# 0044-recovery-apollo-Add-support-for-recovery-reset.patch.
+#
+# It deliberately does NOT forward "$@". The same U-Boot code prepends a marker
+# word -- "factory_reset" or "hard_recovery" -- to the kernel command line, and
+# the kernel hands unrecognised words to init as arguments. Passing those to
+# systemd would have it complain about unknown arguments on every recovery
+# boot. Anything that needs the marker reads /proc/cmdline instead; see
+# omni-recovery-disarm.service.
+exec /lib/systemd/systemd
