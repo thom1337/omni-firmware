@@ -424,6 +424,33 @@ else
             VERIFIED="NOT VERIFIED (no hash tool)"
         else
             banner "verify"
+
+            # SIZE FIRST. This is the check that actually answers "is the
+            # archive complete", and unlike the hash it is not racy: the device
+            # is live, so its contents legitimately change between the image and
+            # any later hash of it, but its SIZE does not. A short archive is a
+            # truncated transfer and is fatal; a size-correct archive whose hash
+            # differs is a different situation entirely (see below).
+            if [ "$EMMC_SIZE" -gt 0 ]; then
+                log "checking the archive decompresses to $EMMC_SIZE bytes"
+                _sizef="${DEST}/.local-size.tmp"
+                set +e
+                gzip -dc "$FULL" | wc -c > "$_sizef"
+                SRC="${PIPESTATUS[*]}"
+                set -e
+                case "$SRC" in
+                    "0 0") ;;
+                    *) rm -f -- "$_sizef"
+                       die "the archive does not decompress cleanly (exit codes $SRC) - it is truncated or corrupt" ;;
+                esac
+                _bytes=$(tr -dc '0-9' < "$_sizef"); rm -f -- "$_sizef"
+                if [ "$_bytes" != "$EMMC_SIZE" ]; then
+                    err "archive is $_bytes bytes decompressed, device is $EMMC_SIZE"
+                    die "the full eMMC image is INCOMPLETE - re-run the backup"
+                fi
+                ok "archive decompresses to exactly $EMMC_SIZE bytes"
+            fi
+
             log "hashing the local image (decompressed) with $LOCAL_HASH"
             # The pipeline writes to a file rather than being captured with
             # LOCAL_SUM=$(...). Inside a command substitution the pipeline is not
@@ -472,11 +499,46 @@ else
                 err "  local : $LOCAL_SUM"
                 err "  remote: $REMOTE_SUM"
                 err ""
-                err "  The device is live, so anything that wrote to the eMMC between the"
-                err "  image and the hash produces exactly this.  Re-run with --quiesce,"
-                err "  which stops docker/containerd/syslog-ng for the duration."
-                err "  Do NOT treat this backup as good."
-                die "full eMMC image did not verify"
+
+                # Distinguish the two causes, rather than blaming the archive
+                # for something it cannot control. Hashing a MOUNTED, running
+                # filesystem twice gives two different answers -- journal
+                # commits, atime, /var writes -- so if the device disagrees with
+                # ITSELF, the image is not what is wrong. Only the size check
+                # above can speak to completeness, and it already passed.
+                log "re-hashing the device to tell live drift from a bad archive"
+                set +e
+                REMOTE_RAW2=$(rsh "$REMOTE_HASH $OMNI_EMMC")
+                R2RC=$?
+                set -e
+                REMOTE_SUM2=""
+                [ "$R2RC" = 0 ] && REMOTE_SUM2=$(printf '%s' "$REMOTE_RAW2" | cut -d' ' -f1)
+                printf 'remote (2nd read):                     %s\n' "${REMOTE_SUM2:-<failed>}" \
+                    >> "$DEST/MD5-VERIFY.txt"
+
+                if [ -n "$REMOTE_SUM2" ] && [ "$REMOTE_SUM2" != "$REMOTE_SUM" ]; then
+                    printf 'RESULT: LIVE DRIFT (device disagrees with itself)\n' >> "$DEST/MD5-VERIFY.txt"
+                    err "  the device does not even match ITSELF between two reads:"
+                    err "    read 1: $REMOTE_SUM"
+                    err "    read 2: $REMOTE_SUM2"
+                    err ""
+                    err "  So this is live drift, not a bad archive: the root filesystem is"
+                    err "  mounted read-write and keeps writing. A whole-device hash cannot"
+                    err "  be made to match while the system is running, at any quiesce level."
+                    err ""
+                    err "  The archive decompressed to exactly the right size, and the small"
+                    err "  artefacts that actually gate an environment write -- omni-env.txt"
+                    err "  (ethaddr), omni-env-8k.bin, omni-boot0.img, omni-boot1.img and the"
+                    err "  partition table -- come from boot0/boot1, which the running system"
+                    err "  does not write. Those are trustworthy."
+                    warn "full eMMC image: NOT byte-verified (device is live)"
+                    VERIFIED="size-verified only; whole-device hash impossible while running"
+                else
+                    err "  The device agrees with itself across two reads, so the eMMC is"
+                    err "  stable and the archive genuinely does not match it."
+                    err "  Do NOT treat this backup as good."
+                    die "full eMMC image did not verify"
+                fi
             fi
         fi
     fi
