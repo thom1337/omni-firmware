@@ -425,17 +425,38 @@ else
         else
             banner "verify"
             log "hashing the local image (decompressed) with $LOCAL_HASH"
+            # The pipeline writes to a file rather than being captured with
+            # LOCAL_SUM=$(...). Inside a command substitution the pipeline is not
+            # the last command the shell ran -- the ASSIGNMENT is -- so
+            # PIPESTATUS came back as the assignment's single status, "0",
+            # which never matched "0 0 0". The result was that verification
+            # failed 100% of the time and reported a perfectly good archive as
+            # possibly truncated. Keep the pipeline bare so PIPESTATUS is real.
+            _sumf="${DEST}/.local-hash.tmp"
             set +e
-            LOCAL_SUM=$(gzip -dc "$FULL" | "$LOCAL_HASH" | cut -d' ' -f1)
+            gzip -dc "$FULL" | "$LOCAL_HASH" > "$_sumf"
             VRC="${PIPESTATUS[*]}"
             set -e
             case "$VRC" in
-                "0 0 0") ;;
-                *) die "could not hash the local image (exit codes $VRC) - the archive may be truncated" ;;
+                "0 0") ;;
+                *) rm -f -- "$_sumf"
+                   die "could not hash the local image (exit codes $VRC) - the archive may be truncated" ;;
             esac
+            LOCAL_SUM=$(cut -d' ' -f1 < "$_sumf")
+            rm -f -- "$_sumf"
+            [ -n "$LOCAL_SUM" ] || die "local $LOCAL_HASH produced no digest"
             log "hashing $OMNI_EMMC on the device with $REMOTE_HASH"
-            REMOTE_SUM=$(rsh "$REMOTE_HASH $OMNI_EMMC" | cut -d' ' -f1) \
-                || die "remote $REMOTE_HASH failed"
+            # Same trap on the remote side: `X=$(rsh ... | cut ...) || die` tests
+            # the exit status of cut, not of rsh, so a failed remote hash would
+            # be masked and surface later as a bogus HASH MISMATCH. Capture the
+            # raw output first, check it, then cut.
+            set +e
+            REMOTE_RAW=$(rsh "$REMOTE_HASH $OMNI_EMMC")
+            RSUM_RC=$?
+            set -e
+            [ "$RSUM_RC" = 0 ] || die "remote $REMOTE_HASH failed (exit $RSUM_RC)"
+            REMOTE_SUM=$(printf '%s' "$REMOTE_RAW" | cut -d' ' -f1)
+            [ -n "$REMOTE_SUM" ] || die "remote $REMOTE_HASH produced no digest"
             {
                 printf 'algorithm: %s\n' "$REMOTE_HASH"
                 printf 'local  (gzip -dc omni-emmc-full.img.gz): %s\n' "$LOCAL_SUM"
