@@ -1304,6 +1304,32 @@ check_ext4_features() {
 	fi
 }
 
+check_device_tools() {
+	# The image must be able to update itself. These used to be copied in by
+	# hand to /usr/local/sbin, which is PER-SLOT: boot the other half of the A/B
+	# pair and they are gone. That is not hypothetical -- a flash of p7 silently
+	# did nothing because omni-flash.sh lived on the slot we had just booted
+	# away from, and a missing script in a pipeline is a no-op, not an error.
+	#
+	# omni-flash.sh also sources omni-lib.sh and execs omni-arm.sh from its OWN
+	# directory, so "present" is not enough: they have to be siblings, and they
+	# have to be executable. A non-executable tool fails exactly as silently as
+	# an absent one.
+	local t d=/usr/sbin missing=0
+	for t in omni-lib.sh omni-flash.sh omni-arm.sh omni-commit.sh omni-rollback.sh; do
+		if [ "$(r_type "$d/$t")" != file ]; then
+			fail "$d/$t is missing" \
+				"The image cannot flash, arm, commit or roll back itself; every update needs a workstation to copy scripts in first, and forgetting that produces a silent no-op rather than an error."
+			missing=1
+		elif ! r_exec "$d/$t"; then
+			fail "$d/$t is not executable (mode: $(r_mode "$d/$t"))" \
+				"run-parts and shell invocation both skip a non-executable file without an error, so the tool is inert in the same silent way a missing one is."
+			missing=1
+		fi
+	done
+	[ "$missing" = 1 ] || ok "device tools present and executable in $d (self-updating image)"
+}
+
 check_ip_forwarding() {
 	# If the image can advertise Tailscale subnet routes or an exit node, it
 	# must also be able to forward. Those advertisements live in
@@ -1412,6 +1438,7 @@ if [ -n "$ROOTFS" ]; then
 	wanted tailscale && check_tailscale
 	wanted data-symlinks && check_data_symlinks
 	wanted ip-forwarding && check_ip_forwarding
+	wanted device-tools && check_device_tools
 else
 	skip "rootfs checks" "no rootfs directory or tarball given"
 fi

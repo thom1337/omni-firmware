@@ -96,6 +96,12 @@ ASSERT_BOOT=1
 # 450 MiB partition, and asserting one exists fails a perfectly good image.
 NO_INITRAMFS=0
 KEEP_MODULES=""
+# Operator tools that run ON the device, installed into the image from tools/
+# rather than copied into overlay/ -- two copies in one repository drift, and
+# the one that drifts is always the one you need at 2 a.m.
+TOOLS_DIR="${SCRIPT_DIR}/../tools"
+DEVICE_TOOLS="omni-lib.sh omni-flash.sh omni-arm.sh omni-commit.sh omni-rollback.sh omni-preflight.sh"
+WITH_DEVICE_TOOLS=1
 ALLOW_UNVERIFIED=0
 
 KEEP_IMAGE=0
@@ -208,6 +214,12 @@ IMAGE CONTENT
                         their dependencies (resolved via modules.dep), then
                         re-run depmod. For the 450 MiB recovery slot, where the
                         stock 212 MiB module tree does not fit.
+  --tools-dir DIR       where the device-side operator tools come from.
+                        Default ${TOOLS_DIR}
+  --no-device-tools     do not install omni-flash.sh and friends into /usr/sbin.
+                        The image can then only be updated by copying them in
+                        first, which is how this used to work and how a flash
+                        silently did nothing when the copy was forgotten.
   --no-assert-boot      do not fail when /boot/<kernel|dtb|ramdisk> are missing
   --allow-unverified-boot-names
                         build even though the overlay's /etc/default/omni-boot still has
@@ -282,6 +294,8 @@ while [ $# -gt 0 ]; do
 	--no-assert-boot)   ASSERT_BOOT=0; shift;;
 	--no-initramfs)     NO_INITRAMFS=1; shift;;
 	--keep-modules)     KEEP_MODULES=${2:?--keep-modules needs a value}; shift 2;;
+	--tools-dir)        TOOLS_DIR=${2:?--tools-dir needs a value}; shift 2;;
+	--no-device-tools)  WITH_DEVICE_TOOLS=0; shift;;
 	--allow-unverified-boot-names) ALLOW_UNVERIFIED=1; shift;;
 	--out)              OUT_DIR=${2:?--out needs a value}; shift 2;;
 	--work)             WORK_DIR=${2:?--work needs a value}; shift 2;;
@@ -1379,6 +1393,40 @@ if [ -n "$OVERLAY_TAR" ]; then
 	tar -C "$OVERLAY_DIR" --owner=0 --group=0 --numeric-owner --sort=name \
 		--exclude-vcs --exclude='.gitkeep' --exclude='*~' \
 		-cf "$OVERLAY_TAR" .
+
+	# Device-side operator tools, APPENDED to the same tar rather than kept as a
+	# second copy under overlay/. Two copies of omni-flash.sh in one repository
+	# drift, and the one that drifts is the one you need at 2 a.m.
+	#
+	# They go in /usr/sbin, not /usr/local/sbin, for a specific reason: on Debian
+	# root's PATH has /usr/local/sbin FIRST, so a hand-copied newer script there
+	# still wins. Shipping into /usr/local/sbin would have the image fight the
+	# override instead of yielding to it.
+	#
+	# WHY THIS EXISTS AT ALL: these used to be copied in by hand per slot, and
+	# /usr/local/sbin is per-slot. Boot the other half of an A/B pair and they
+	# are simply gone -- which is how a flash of p7 silently did nothing, because
+	# omni-flash.sh was on the slot we had just booted away from. An appliance
+	# that cannot update itself without a laptop first copying scripts in is not
+	# finished.
+	if [ "$WITH_DEVICE_TOOLS" = 1 ]; then
+		[ -d "$TOOLS_DIR" ] || die "--tools-dir: not a directory: $TOOLS_DIR"
+		missing=""
+		for t in $DEVICE_TOOLS; do
+			[ -r "${TOOLS_DIR}/${t}" ] || missing="${missing} ${t}"
+		done
+		[ -z "$missing" ] || die "device tools missing from ${TOOLS_DIR}:${missing}"
+		# --mode=0755 rather than trusting the checkout: git records only the
+		# exec bit, and a tool that arrives non-executable is inert in exactly
+		# the same silent way a missing one is.
+		# shellcheck disable=SC2086
+		tar -rf "$OVERLAY_TAR" -C "$TOOLS_DIR" \
+			--owner=0 --group=0 --numeric-owner --mode=0755 \
+			--transform='s,^,./usr/sbin/,' $DEVICE_TOOLS
+		log "installed device tools into /usr/sbin: $DEVICE_TOOLS"
+	else
+		warn "--no-device-tools: the image cannot flash or roll back itself"
+	fi
 	info "$(tar -tf "$OVERLAY_TAR" | wc -l) entries"
 fi
 
