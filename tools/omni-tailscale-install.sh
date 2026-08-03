@@ -38,18 +38,32 @@ got=$(sha256sum "$TGZ" | cut -d' ' -f1)
 This is the same digest the build pins. Refusing to install."
 say "checksum ok: $got"
 
-tmp=$(mktemp -d)
-# shellcheck disable=SC2064
-trap "rm -rf '$tmp'" EXIT
-tar xzf "$TGZ" -C "$tmp"
-src=$(find "$tmp" -maxdepth 1 -type d -name 'tailscale_*_arm64' | head -1)
-[ -n "$src" ] || die "unexpected tarball layout"
+# Stream each member straight to its destination. The obvious `mktemp -d` +
+# extract-everything does NOT work here: mktemp lands in /tmp, which this image
+# caps at a 32 MiB tmpfs (see /etc/fstab), and the tarball expands to ~68 MiB of
+# Go binaries. That fails halfway through with "No space left on device" having
+# written a truncated tailscaled. Streaming needs no scratch space at all -- the
+# destination filesystem (the overlay upper, ~577 MiB free) is the only space
+# used. It costs one decompression pass per file, which is a few seconds each.
+prefix=$(tar tzf "$TGZ" 2>/dev/null | head -1 | cut -d/ -f1)
+[ -n "$prefix" ] || die "cannot read the tarball layout"
 
-say "installing binaries"
-install -D -m 0755 "$src/tailscaled" /usr/sbin/tailscaled
-install -D -m 0755 "$src/tailscale"  /usr/bin/tailscale
-install -D -m 0644 "$src/systemd/tailscaled.service" /usr/lib/systemd/system/tailscaled.service
-[ -f /etc/default/tailscaled ] || install -D -m 0644 "$src/systemd/tailscaled.defaults" /etc/default/tailscaled
+extract_to() {
+    _member="$1"; _dest="$2"; _mode="$3"
+    mkdir -p "$(dirname "$_dest")"
+    # Write to .new first: a partial write must never replace a working binary.
+    tar xzf "$TGZ" -O "$prefix/$_member" > "$_dest.new" || die "extract failed: $_member"
+    [ -s "$_dest.new" ] || die "extracted $_member is empty"
+    chmod "$_mode" "$_dest.new"
+    mv -f "$_dest.new" "$_dest"
+    say "installed $_dest ($(wc -c < "$_dest") bytes)"
+}
+
+say "installing binaries (streamed, no temp extraction)"
+extract_to tailscaled /usr/sbin/tailscaled 0755
+extract_to tailscale  /usr/bin/tailscale   0755
+extract_to systemd/tailscaled.service /usr/lib/systemd/system/tailscaled.service 0644
+[ -f /etc/default/tailscaled ] || extract_to systemd/tailscaled.defaults /etc/default/tailscaled 0644
 
 # State on /data, never the per-slot overlay. 0700: this file IS the machine's
 # identity on the tailnet.

@@ -980,6 +980,13 @@ fi
 # mmdebstrap already empties the lists and the archive cache itself, immediately
 # after this hook returns. Leave both to it and only drop the .deb archives,
 # which it is happy for us to have removed early.
+# Debian's /etc/update-motd.d/10-uname reprints `uname -a` immediately after our
+# banner, which already reports the kernel -- it visually breaks the banner for
+# no information. chmod -x rather than rm: the file belongs to a package, so a
+# deletion would be restored on upgrade and look like a regression, whereas
+# run-parts simply skips a non-executable file and dpkg leaves the mode alone.
+[ -f /etc/update-motd.d/10-uname ] && chmod -x /etc/update-motd.d/10-uname
+
 apt-get clean
 rm -f /var/cache/apt/archives/*.deb 2>/dev/null || true
 echo "I: 60-finalise: ok"
