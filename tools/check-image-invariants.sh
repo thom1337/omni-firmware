@@ -1304,6 +1304,34 @@ check_ext4_features() {
 	fi
 }
 
+check_ip_forwarding() {
+	# If the image can advertise Tailscale subnet routes or an exit node, it
+	# must also be able to forward. Those advertisements live in
+	# /data/tailscale/tailscaled.state, which is SHARED by both A/B slots and
+	# the recovery slot -- so any slot that boots re-advertises them, using the
+	# same node identity, already approved in the control plane.
+	#
+	# An image that advertises but cannot forward fails silently: the tailnet
+	# routes LAN traffic to this node and it drops every packet, with nothing in
+	# any log. This check exists because the recovery image shipped exactly that
+	# way once -- the sysctl was added to the A/B overlay and not to the
+	# recovery one.
+	local f=/etc/sysctl.d/99-omni-forwarding.conf c
+	if [ "$(r_type "$f")" != file ]; then
+		fail "$f is missing" \
+			"Tailscale advertisements live on the SHARED /data, so this slot will advertise routes it cannot serve. The tailnet then blackholes LAN traffic through it, silently."
+		return 0
+	fi
+	c=$(r_cat "$f" 2>/dev/null || printf '')
+	case "$c" in
+	*"net.ipv4.ip_forward = 1"*|*"net.ipv4.ip_forward=1"*)
+		ok "$f enables net.ipv4.ip_forward" ;;
+	*)
+		fail "$f exists but does not set net.ipv4.ip_forward = 1" \
+			"Forwarding off means every packet routed to this node is dropped, with no error anywhere." ;;
+	esac
+}
+
 check_recovery() {
 	# What p7 must have, and must NOT have. U-Boot boots it with init=/init and
 	# no initrd, so /init is load-bearing: without it the slot does not start at
@@ -1383,6 +1411,7 @@ if [ -n "$ROOTFS" ]; then
 	wanted ssh-authorized-keys && check_ssh_authorized_keys
 	wanted tailscale && check_tailscale
 	wanted data-symlinks && check_data_symlinks
+	wanted ip-forwarding && check_ip_forwarding
 else
 	skip "rootfs checks" "no rootfs directory or tarball given"
 fi
