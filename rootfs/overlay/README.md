@@ -74,6 +74,7 @@ just says `overlay`).
 
 | Item | Mechanism | File in this tree |
 |---|---|---|
+| Tailscale node identity | `--state=/data/tailscale/tailscaled.state` | `etc/systemd/system/tailscaled.service.d/10-omni.conf` |
 | sshd host keys | `HostKey /data/ssh/…` (with `/etc/ssh` fallback) | `etc/ssh/sshd_config.d/10-omni.conf`, `usr/lib/omni/omni-ssh-hostkeys` |
 | SSH authorized keys | second `AuthorizedKeysFile` entry | `etc/ssh/sshd_config.d/10-omni.conf` |
 | directory skeleton + modes | tmpfiles | `etc/tmpfiles.d/omni-data.conf` |

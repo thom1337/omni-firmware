@@ -999,6 +999,44 @@ check_modprobe_blacklist() {
 	fi
 }
 
+check_tailscale() {
+	# Tailscale is optional (--no-tailscale), so absence is fine. What is NOT
+	# fine is shipping it with its state on the per-slot overlay: the node
+	# identity would be lost on the first A/B flip and the box would drop off
+	# the tailnet after every update, on a headless unit.
+	if [ "$(r_type /usr/sbin/tailscaled)" != file ]; then
+		ok "tailscaled absent (image built without Tailscale)"
+		return
+	fi
+	ok "tailscaled present"
+
+	local d=/etc/systemd/system/tailscaled.service.d/10-omni.conf
+	if [ "$(r_type "$d")" = file ] && r_cat "$d" | grep -q -- '--state=/data/tailscale/'; then
+		ok "tailscaled state is pinned to /data (survives an A/B flip)"
+	else
+		fail "tailscaled ships without the /data state override" \
+			"Default state is /var/lib/tailscale/tailscaled.state, which is inside the per-slot overlay upper (p5/p6). The node identity would then belong to one slot, and the first rollback or update would boot a slot that has never authenticated -- the device silently leaves the tailnet with no console attached."
+	fi
+
+	if [ "$(r_type /var/lib/tailscale)" = absent ]; then
+		ok "/var/lib/tailscale does not exist (nothing to tempt the per-slot path)"
+	else
+		warn "/var/lib/tailscale exists in the image" \
+			"Harmless on its own, but it is the path tailscaled and anyone debugging will reach for by default, which is precisely the per-slot trap."
+	fi
+
+	# A baked-in auth key would let the image enrol anything it is written to.
+	local k
+	for k in /data/tailscale/authkey /etc/tailscale/authkey /var/lib/tailscale/authkey; do
+		if [ "$(r_type "$k")" = file ]; then
+			fail "an auth key is baked into the image at $k" \
+				"A pre-auth key is a credential. An image carrying one can enrol any device it is ever written to, and this image is meant to be reproducible and shareable. Keys belong on /data at provisioning time, never in the build."
+			return
+		fi
+	done
+	ok "no Tailscale auth key baked into the image"
+}
+
 check_data_symlinks() {
 	local p t
 	for p in /root/.ssh /etc/wireguard; do
@@ -1183,6 +1221,7 @@ if [ -n "$ROOTFS" ]; then
 	wanted network-naming && check_network_naming
 	wanted sshd && check_sshd
 	wanted modprobe-blacklist && check_modprobe_blacklist
+	wanted tailscale && check_tailscale
 	wanted data-symlinks && check_data_symlinks
 else
 	skip "rootfs checks" "no rootfs directory or tarball given"

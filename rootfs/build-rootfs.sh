@@ -213,6 +213,9 @@ while [ $# -gt 0 ]; do
 	--no-security)      WITH_SECURITY=0; shift;;
 	--components)       COMPONENTS=${2:?--components needs a value}; shift 2;;
 	--mode)             MMDEBSTRAP_MODE=${2:?--mode needs a value}; shift 2;;
+	--no-tailscale)     TAILSCALE=0; shift;;
+	--tailscale-version) TAILSCALE_VERSION=${2:?--tailscale-version needs a value}; shift 2;;
+	--tailscale-sha256) TAILSCALE_SHA256=${2:?--tailscale-sha256 needs a value}; shift 2;;
 	--blocks)           BLOCKS=${2:?--blocks needs a value}; BLOCKS_EXPLICIT=1; shift 2;;
 	--size-mib)         BLOCKS=$(( ${2:?--size-mib needs a value} * 1048576 / BLOCK_SIZE )); BLOCKS_EXPLICIT=1; shift 2;;
 	--blocks-from)      BLOCKS_FROM=${2:?--blocks-from needs a value}; BLOCKS_EXPLICIT=1; shift 2;;
@@ -477,6 +480,8 @@ declare -a ENABLE_UNITS=(
 	ssh.service
 	"serial-getty@${CONSOLE}.service"
 	'?data.mount'
+	'?omni-tailscale-auth.service'
+	'?tailscaled.service'
 )
 if [ -n "$OVERLAY_DIR" ]; then
 	# Anything the overlay ships called omni-* gets enabled. A unit with no [Install]
@@ -567,6 +572,44 @@ exit 0
 HOOK20
 
 # 30 — systemd enablement.
+cat >"${HOOK_DIR}/25-tailscale.sh" <<'HOOK25'
+#!/bin/sh
+# Install the verified Tailscale tarball. The archive was downloaded and its
+# sha256 checked on the build host before this hook ran, so nothing unverified
+# reaches the image.
+set -eu
+chroot_dir=$1
+[ -n "${OMNI_TS_TGZ:-}" ] || { echo "I: 25-tailscale: not requested, skipping" >&2; exit 0; }
+[ -s "$OMNI_TS_TGZ" ] || { echo "E: 25-tailscale: ${OMNI_TS_TGZ} missing" >&2; exit 1; }
+
+tmp=$(mktemp -d)
+tar xzf "$OMNI_TS_TGZ" -C "$tmp"
+src=$(find "$tmp" -maxdepth 1 -type d -name 'tailscale_*_arm64' | head -1)
+[ -n "$src" ] || { echo "E: 25-tailscale: unexpected tarball layout" >&2; exit 1; }
+
+install -D -m 0755 "$src/tailscaled" "$chroot_dir/usr/sbin/tailscaled"
+install -D -m 0755 "$src/tailscale"  "$chroot_dir/usr/bin/tailscale"
+# Upstream's unit. Our drop-in in the overlay repoints the state at /data; this
+# is installed UNDER it so the drop-in still applies.
+install -D -m 0644 "$src/systemd/tailscaled.service" \
+	"$chroot_dir/usr/lib/systemd/system/tailscaled.service"
+install -D -m 0644 "$src/systemd/tailscaled.defaults" \
+	"$chroot_dir/etc/default/tailscaled"
+rm -rf "$tmp"
+
+# /var/lib/tailscale must NOT exist: its presence is what tempts tailscaled and
+# anyone debugging into using the per-slot path instead of /data.
+rm -rf "$chroot_dir/var/lib/tailscale"
+
+chroot "$chroot_dir" /bin/sh -eu <<'IN_CHROOT'
+[ -x /usr/sbin/tailscaled ] || { echo "E: tailscaled not installed" >&2; exit 1; }
+[ -x /usr/bin/tailscale ]   || { echo "E: tailscale not installed" >&2; exit 1; }
+echo "I: 25-tailscale: $(/usr/bin/tailscale --version 2>/dev/null | head -1 || echo 'version unavailable (cross-arch)')"
+IN_CHROOT
+echo "I: 25-tailscale: ok"
+HOOK25
+chmod +x "${HOOK_DIR}/25-tailscale.sh"
+
 cat >"${HOOK_DIR}/30-systemd.sh" <<'HOOK30'
 #!/bin/sh
 set -eu
@@ -942,6 +985,29 @@ HOOK60
 chmod 0755 "${HOOK_DIR}"/*.sh
 
 # --------------------------------------------------------------------------- mmdebstrap
+# Fetch and verify Tailscale on the BUILD HOST. Deliberately not inside the
+# chroot: the chroot would need network access, and an unverified binary would
+# already be in the image by the time anything checked it. Here a bad checksum
+# fails the build before a single byte is installed.
+TS_TGZ=""
+if [ "$TAILSCALE" = 1 ]; then
+	TS_TGZ="${WORK_DIR}/tailscale_${TAILSCALE_VERSION}_arm64.tgz"
+	TS_URL="${TAILSCALE_URL_BASE}/tailscale_${TAILSCALE_VERSION}_arm64.tgz"
+	info "fetching Tailscale ${TAILSCALE_VERSION} (arm64) from ${TS_URL}"
+	curl -fL --retry 3 --retry-delay 5 --connect-timeout 20 -o "$TS_TGZ" "$TS_URL" \
+		|| die "could not download Tailscale ${TAILSCALE_VERSION}"
+	got=$(sha256sum "$TS_TGZ" | cut -d' ' -f1)
+	if [ "$got" != "$TAILSCALE_SHA256" ]; then
+		die "Tailscale checksum MISMATCH
+  url      ${TS_URL}
+  expected ${TAILSCALE_SHA256}
+  got      ${got}
+Either the pin is stale (bump TAILSCALE_VERSION and TAILSCALE_SHA256 together)
+or the download is not what it claims to be. Refusing to build."
+	fi
+	ok "Tailscale ${TAILSCALE_VERSION} verified: ${got}"
+fi
+
 DEB_LIST="${WORK_DIR}/kernel-debs.list"
 OVERLAY_TAR=""
 [ -n "$OVERLAY_DIR" ] && OVERLAY_TAR="${WORK_DIR}/overlay.tar"
@@ -972,8 +1038,10 @@ if [ "$SLIM" = 1 ]; then
 fi
 [ "$VERBOSE" = 1 ] && MM+=(--verbose)
 [ -n "$QEMU_STATIC" ] && MM+=("--setup-hook=mkdir -p \"\$1/usr/bin\" && cp ${QEMU_STATIC} \"\$1${QEMU_STATIC}\"")
+export OMNI_TS_TGZ="${TS_TGZ}"
 MM+=("--customize-hook=${HOOK_DIR}/10-overlay.sh"
      "--customize-hook=${HOOK_DIR}/20-kernel.sh"
+     "--customize-hook=${HOOK_DIR}/25-tailscale.sh"
      "--customize-hook=${HOOK_DIR}/30-systemd.sh"
      "--customize-hook=${HOOK_DIR}/40-serial.sh"
      "--customize-hook=${HOOK_DIR}/50-boot.sh"
