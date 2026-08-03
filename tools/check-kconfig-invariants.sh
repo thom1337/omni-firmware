@@ -87,6 +87,7 @@ CONFIG_SYN_COOKIES|y|fail|Removed by patch 0009's defconfig trimming. A router f
 # --- cgroup v2 (phase 8 gate: stat -fc %T /sys/fs/cgroup = cgroup2fs) -------
 CONFIG_CGROUPS|y|fail|systemd >=256 refuses to boot without cgroup v2; the Yocto system used a cgroup v1 tmpfs fstab hack.
 CONFIG_MEMCG|y|fail|cgroup2 memory accounting. On a 512 MB box, per-unit memory limits are how one leaking service is stopped from taking PID 1 down with it.
+CONFIG_LEDS_TRIGGER_NETDEV|y|warn|STRICT =y: the three board LEDs are the only status output on a headless box that survives userspace dying. =m would vanish in the recovery slot, whose module tree is pruned to what the board actually loads, and would also race udev (trigger set before the module is inserted fails silently, leaving the LED dark).
 CONFIG_BRIDGE|ym|warn|Bridging in its own right -- commit 6035455 added the bridge modules to the 5.4 defconfig deliberately. Present in Armbian's stock meson64 config too.
 CONFIG_VETH|ym|warn|veth pairs. Was here for container networking; the image now ships no container runtime, so this is retained only because Armbian provides it free and removing it would cost a rebuild if that changes.
 CONFIG_NETFILTER_XT_MATCH_ADDRTYPE|ym|warn|addrtype matches (local/broadcast/multicast). Was a Docker requirement; kept because it is free in Armbian's config and generally useful in a router ruleset.

@@ -5,7 +5,7 @@
 # only signal available before you have a shell, and knowing you are in
 # recovery changes what you should do next.
 #
-#   A/B slots:  power breathing, app1 flickering with eMMC, app2 dark
+#   A/B slots:  power breathing, app1 flickering with network traffic, app2 dark
 #   recovery:   power breathing, app1 AND app2 SOLID
 #
 # Two steady lights that are never both on in normal operation. You can see it

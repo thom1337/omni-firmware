@@ -18,11 +18,12 @@
 #                          information you cannot get from a headless appliance
 #                          any other way.
 #
-#   app1  -> mmc0          eMMC activity. The chosen trigger is deliberately
-#                          mmc0 rather than the generic disk-activity: this
-#                          board has exactly one storage device and everything
-#                          interesting (a flash, an update, a log flush) goes
-#                          through it.
+#   app1  -> netdev        Flickers with traffic on end0, and is solid when the
+#                          link is up but idle. On a box whose entire purpose is
+#                          to be on the network, "is it talking?" is the most
+#                          useful thing a light can tell you -- and it
+#                          distinguishes "no carrier" from "carrier, no traffic"
+#                          from "busy" without logging in.
 #
 #   app2  -> panic         Lights ONLY when the kernel panics. This one earns
 #                          its place: journald is Storage=volatile and /var/log
@@ -30,9 +31,15 @@
 #                          all. A latched LED turns "it was dead when I found
 #                          it" into "it panicked", without a serial cable.
 #
-# There is deliberately no netdev trigger: this kernel is built without
-# CONFIG_LEDS_TRIGGER_NETDEV, so writing "netdev" here would silently do
-# nothing. Checked on the hardware rather than assumed.
+# CONFIG_LEDS_TRIGGER_NETDEV is =y in board/linux-meson64-omni.config, not =m,
+# on purpose: as a module it is absent from the recovery slot's pruned module
+# tree, and it races udev -- writing an unavailable trigger name to sysfs fails
+# silently and leaves the LED dark.
 ACTION=="add", SUBSYSTEM=="leds", KERNEL=="apollo:power", ATTR{trigger}="heartbeat"
-ACTION=="add", SUBSYSTEM=="leds", KERNEL=="apollo:app1",  ATTR{trigger}="mmc0"
+# The netdev trigger needs its parameters set AFTER the trigger is selected --
+# device_name and friends only exist once trigger=netdev, and udev applies the
+# ATTR{} assignments in the order written, so this works in a single rule.
+# interval is in ms and the kernel rounds it to jiffies (50 -> 52 here); that is
+# the trigger's polling period, not a blink rate.
+ACTION=="add", SUBSYSTEM=="leds", KERNEL=="apollo:app1",  ATTR{trigger}="netdev", ATTR{device_name}="end0", ATTR{link}="1", ATTR{rx}="1", ATTR{tx}="1", ATTR{interval}="50"
 ACTION=="add", SUBSYSTEM=="leds", KERNEL=="apollo:app2",  ATTR{trigger}="panic"
