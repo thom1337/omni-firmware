@@ -1,13 +1,21 @@
+# NOTE ON TRANSPORT: three of these were git:// -- the unauthenticated git
+# daemon on port 9418. Neither git.yoctoproject.org nor git.openembedded.org
+# serves that protocol any more, so `git clone --recurse-submodules` on this
+# repository hangs and then fails, roughly 4.5 minutes per submodule. https is
+# the only transport those hosts still offer. Branch pins are unchanged.
 [submodule "repo/meta-gplv2"]
 	path = repo/meta-gplv2
-	url = git://git.yoctoproject.org/meta-gplv2
+	url = https://git.yoctoproject.org/meta-gplv2
 	branch = dunfell
 [submodule "repo/meta-meson"]
 	path = repo/meta-meson
 	url = https://github.com/superna9999/meta-meson.git
 [submodule "repo/meta-openembedded"]
 	path = repo/meta-openembedded
-	url = git://git.openembedded.org/meta-openembedded
+	url = https://git.openembedded.org/meta-openembedded
 [submodule "repo/poky"]
 	path = repo/poky
-	url = git://git.yoctoproject.org/poky
+	url = https://git.yoctoproject.org/poky
+[submodule "armbian"]
+	path = armbian
+	url = https://github.com/armbian/build.git
