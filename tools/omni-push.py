@@ -173,6 +173,12 @@ def main():
     ap = argparse.ArgumentParser(description="Push files to the Omni over serial.")
     ap.add_argument("files", nargs="+")
     ap.add_argument("--dest", default="/data/omni-tools")
+    ap.add_argument("--from-root", default="",
+                    help="preserve each file's path RELATIVE to this directory instead of "
+                         "flattening to its basename. With --dest / this installs files "
+                         "straight to their real locations, which is what you want for "
+                         "overlay content (a unit file and the script it runs do not live "
+                         "in the same directory).")
     ap.add_argument("--chunk", type=int, default=512)
     ap.add_argument("--keep-b64", action="store_true")
     ap.add_argument("--stream", action="store_true",
@@ -193,7 +199,16 @@ def main():
             if not os.path.isfile(f):
                 sys.stderr.write(f"not a file: {f}\n")
                 return 2
-            tf.add(f, arcname=os.path.basename(f))
+            if args.from_root:
+                root = os.path.abspath(args.from_root)
+                ap_ = os.path.abspath(f)
+                if not ap_.startswith(root + os.sep):
+                    sys.stderr.write(f"--from-root: {f} is not under {args.from_root}\n")
+                    return 2
+                arc = os.path.relpath(ap_, root)
+            else:
+                arc = os.path.basename(f)
+            tf.add(f, arcname=arc)
     payload = raw.getvalue()
     digest = hashlib.sha256(payload).hexdigest()
     _flat = base64.b64encode(payload).decode()
@@ -239,9 +254,16 @@ def main():
             return 4
         print(f"digest verified on device: {digest[:16]}…", flush=True)
 
-        out = run(sock, f"base64 -d {stage} | tar xzf - -C {args.dest} && "
-                        f"chmod +x {args.dest}/* 2>/dev/null; ls -1 {args.dest}",
-                  quiet=2.0, timeout=600)
+        # `chmod +x dest/*` is only sensible for the flat tools case. With
+        # --from-root the destination is usually / and that would make every
+        # top-level directory executable-ish and mark data files executable.
+        if args.from_root:
+            extract = (f"base64 -d {stage} | tar xzf - -C {args.dest} && "
+                       f"base64 -d {stage} | tar tzf - ")
+        else:
+            extract = (f"base64 -d {stage} | tar xzf - -C {args.dest} && "
+                       f"chmod +x {args.dest}/* 2>/dev/null; ls -1 {args.dest}")
+        out = run(sock, extract, quiet=2.0, timeout=600)
         print("extracted:", flush=True)
         for line in out.splitlines():
             s = line.strip()
