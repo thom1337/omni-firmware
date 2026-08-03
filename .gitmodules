@@ -1,6 +1,12 @@
+# NOTE: these four were git:// (the unauthenticated git daemon on port 9418).
+# Both git.yoctoproject.org and git.openembedded.org stopped serving that
+# protocol, so `git submodule update` hung and retried for ~4.5 minutes per
+# submodule before failing -- which is the entire 24-minute "Checkout
+# repository" failure in the Build Apollo Image workflow. https is the only
+# transport these hosts still offer. Do not put git:// back.
 [submodule "repo/meta-gplv2"]
 	path = repo/meta-gplv2
-	url = git://git.yoctoproject.org/meta-gplv2
+	url = https://git.yoctoproject.org/meta-gplv2
 	branch = kirkstone
 [submodule "repo/meta-meson"]
 	path = repo/meta-meson
@@ -8,15 +14,15 @@
 	branch = kirkstone
 [submodule "repo/meta-openembedded"]
 	path = repo/meta-openembedded
-	url = git://git.openembedded.org/meta-openembedded
+	url = https://git.openembedded.org/meta-openembedded
 	branch = kirkstone
 [submodule "repo/poky"]
 	path = repo/poky
-	url = git://git.yoctoproject.org/poky
+	url = https://git.yoctoproject.org/poky
 	branch = kirkstone
 [submodule "repo/meta-virtualization"]
 	path = repo/meta-virtualization
-	url = git://git.yoctoproject.org/meta-virtualization
+	url = https://git.yoctoproject.org/meta-virtualization
 	branch = kirkstone
 [submodule "armbian"]
 	path = armbian
