@@ -173,6 +173,16 @@ tcpdump
 less
 jq
 
+# Interactive comfort on a box whose normal front door is a 115200 baud serial
+# console. Both are worth their bytes there: btop reads a 512 MB appliance at a
+# glance, and vim means editing a unit file over serial does not mean nano or
+# `cat > file`. Measured cost at the time of adding: ~45 MB of the 184 MB the
+# 850 MiB slot had free. If a future addition stops fitting, that headroom --
+# not these two -- is the thing to reconsider; see rootfs/build-rootfs.sh
+# BLOCKS, which is pinned to p1's real block count and must NOT be grown.
+btop
+vim
+
 # ---------------------------------------------------------------------------
 # DELIBERATELY NOT INSTALLED — build-rootfs.sh asserts these are absent
 # ---------------------------------------------------------------------------
