@@ -1037,6 +1037,26 @@ check_tailscale() {
 	ok "no Tailscale auth key baked into the image"
 }
 
+check_hostname() {
+	# mmdebstrap inherits the build host's /etc/hostname unless the image ships
+	# one. The first build announced itself as "old-laptop" -- the machine that
+	# built it. On a fleet device that is wrong, it leaks the builder's machine
+	# name, and omni-tailscale-auth would register THAT name on the tailnet.
+	local h
+	if [ "$(r_type /etc/hostname)" != file ]; then
+		fail "no /etc/hostname in the image" \
+			"Without one the image takes the build host's hostname, so every device built anywhere announces the builder's machine name."
+		return
+	fi
+	h=$(r_cat /etc/hostname | head -1 | tr -d ' \t\r')
+	case "$h" in
+	omni|omni-*) ok "/etc/hostname is '$h'" ;;
+	'') fail "/etc/hostname is empty" "systemd falls back to 'localhost'." ;;
+	*)  warn "/etc/hostname is '$h', which is not omni/omni-*" \
+			"Check this is deliberate and not the build host's name leaking in again." ;;
+	esac
+}
+
 check_ssh_authorized_keys() {
 	# The lockout check. sshd_config.d/10-omni.conf sets PasswordAuthentication
 	# no and the build locks root's password to '*', so a key is the ONLY way in
@@ -1267,6 +1287,7 @@ if [ -n "$ROOTFS" ]; then
 	wanted network-naming && check_network_naming
 	wanted sshd && check_sshd
 	wanted modprobe-blacklist && check_modprobe_blacklist
+	wanted hostname && check_hostname
 	wanted ssh-authorized-keys && check_ssh_authorized_keys
 	wanted tailscale && check_tailscale
 	wanted data-symlinks && check_data_symlinks
