@@ -259,6 +259,9 @@ done
 
 # --------------------------------------------------------------------------- validation
 need mmdebstrap tar gzip sha256sum sed grep find awk sort mke2fs dumpe2fs e2fsck truncate
+# Only required when Tailscale is being fetched; checked here so the build stops
+# in its precondition phase rather than after mmdebstrap has done its work.
+if [ "$TAILSCALE" = 1 ]; then need curl; fi
 
 case "$PACK_METHOD" in auto|root|sudo|unshare) ;; *) die "--pack-method must be auto|root|sudo|unshare";; esac
 

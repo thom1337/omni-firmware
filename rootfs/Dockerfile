@@ -40,6 +40,11 @@ RUN apt-get update && \
       # sudo: the packing step needs real root to preserve ownership, device nodes and
       # valid (rootid 0) file capabilities. Container root is enough; no host sudo involved.
       sudo passwd \
+      # curl: build-rootfs.sh fetches the pinned Tailscale tarball on the build
+      # side (never inside the chroot, so an unverified binary is never in the
+      # image before its checksum is known). The host happened to have curl, the
+      # builder container did not, so this only failed in CI.
+      curl \
       # misc
       perl file coreutils findutils \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
