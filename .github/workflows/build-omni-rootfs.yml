@@ -127,16 +127,21 @@ jobs:
       # mmdebstrap plus a packed ext4 slot plus Docker layers. root-reserve-mb
       # is large on purpose: /var/lib/docker lives on / , not on the volume
       # this action creates.
-      - name: Maximize build space
-        uses: easimon/maximize-build-space@fc881a613ad2a34aca9c9624518214ebc21dfc0c # v10
-        with:
-          root-reserve-mb: 10240
-          swap-size-mb: 4096
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-          remove-docker-images: 'true'
+      # NO maximize-build-space HERE, deliberately.
+      #
+      # It was failing the job. Measured on the runner:
+      #     before:  /dev/root  145G   58G   88G  40% /
+      #     after:   /dev/root  145G  145G  100M 100% /
+      # It consumed the root filesystem down to 100 MB despite root-reserve-mb,
+      # and /var/lib/docker lives on / -- so the very next step died pulling a
+      # ~50 MB binfmt image with "no space left on device".
+      #
+      # This job does not need it. The whole build is roughly 4 GB: a ~1.5 GB
+      # chroot, the 850 MB image plus its 220 MB gzip, ~380 MB of kernel debs and
+      # the builder container. A stock runner has ~88 GB free. The kernel
+      # workflow is different -- an Armbian tree genuinely needs tens of GB --
+      # which is why it keeps the step.
+
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -149,6 +154,20 @@ jobs:
       - name: Check preconditions
         run: |
           set -euo pipefail
+
+          # Fail here, loudly, rather than 90 seconds later inside docker with
+          # "no space left on device" on a blob write. The whole build is about
+          # 4 GB; 15 GB is a comfortable floor that still catches a runner image
+          # that has grown, or a maximize-build-space step reintroduced above.
+          avail_kb=$(df -Pk / | awk 'NR==2 {print $4}')
+          avail_gb=$(( avail_kb / 1024 / 1024 ))
+          echo "free on /: ${avail_gb} GiB"
+          if [ "$avail_gb" -lt 15 ]; then
+            echo "::error::only ${avail_gb} GiB free on / — this build needs ~4 GiB for the chroot, image and builder container, plus room for /var/lib/docker which lives on /. Something is consuming the root filesystem."
+            df -h / >&2
+            exit 1
+          fi
+
           missing=0
           for f in rootfs/build-in-docker.sh rootfs/build-rootfs.sh rootfs/packages.list \
                    tools/check-image-invariants.sh; do
