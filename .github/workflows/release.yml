@@ -1,0 +1,319 @@
+# ==============================================================================
+#  Release — publish a flashable Omni slot image
+# ==============================================================================
+#
+#  WHAT A RELEASE IS HERE
+#  ----------------------
+#  A release is the pair of things tools/omni-flash.sh needs and nothing else:
+#
+#      omni-slot.ext4.gz          the compressed A/B slot image
+#      omni-slot.ext4.sha256      sha256 of the UNCOMPRESSED image
+#      omni-slot.ext4.size        its byte count
+#
+#  Those last two are not decoration. omni-flash.sh streams
+#  `curl | gzip -dc | dd` onto the inactive slot and then checks
+#      [ "$(head -c "$IMG_SIZE" "$tgt" | sha256sum | cut -d' ' -f1)" = "$IMG_SHA" ]
+#  A truncated download that lies about its own length is the difference
+#  between "the flash script refuses" and "a slot that does not boot", on a
+#  headless box whose only recovery is a serial cable.
+#
+#  The kernel .debs that went INTO the image are published alongside it. An
+#  image and the kernel inside it are one artifact set; separating them means
+#  someone eventually flashes a slot and cannot say which kernel is on it.
+#
+#  IT DOES NOT BUILD ITS OWN IMAGE
+#  -------------------------------
+#  It calls build-omni-rootfs.yml, the same workflow that gates every push.
+#  A release therefore ships an image that passed
+#  tools/check-image-invariants.sh -- the ext4 feature set U-Boot 2018.09 can
+#  actually read, the three flattened /boot names, serial autologin, and the
+#  absence of armbian-install. Copying the build steps into this file would
+#  create a second build that can silently drift out of agreement with the
+#  gate. There is exactly one builder.
+#
+#  IT DOES NOT TOUCH A DEVICE
+#  --------------------------
+#  Publishing an image and installing one are different acts. Nothing here
+#  flashes, arms or commits anything, and nothing here writes a U-Boot
+#  environment variable. Installing is tools/omni-flash.sh + tools/omni-arm.sh,
+#  run by a human who can reach the serial console.
+#
+#  HOW TO CUT ONE
+#  --------------
+#      git tag -a v1.0.0 -m 'first Debian release' && git push origin v1.0.0
+#
+#  or run this workflow manually with a `tag` input. Manual runs mark the
+#  release as a prerelease unless told otherwise, so a test run cannot become
+#  "latest" for someone reading the repo.
+# ==============================================================================
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to create/publish, e.g. v1.0.0. Created from the current ref if it does not exist.'
+        required: true
+        type: string
+      kernel_run_id:
+        description: 'build-omni-kernel.yml run to take the kernel .debs from. Empty = latest successful run on the default branch.'
+        required: false
+        default: ''
+        type: string
+      prerelease:
+        description: 'Mark as a prerelease (default true for manual runs).'
+        required: false
+        default: true
+        type: boolean
+
+# A tag is immutable and a release is public. Never cancel one halfway.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # The gate and the release build are the same build.
+  image:
+    name: Build the slot image
+    uses: ./.github/workflows/build-omni-rootfs.yml
+    permissions:
+      contents: read
+      actions: read
+    with:
+      kernel_run_id: ${{ inputs.kernel_run_id || '' }}
+
+  publish:
+    name: Publish the release
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    permissions:
+      contents: write   # creating a release and its tag
+      actions: read     # gh run download, same repo only
+
+    env:
+      GH_TOKEN: ${{ github.token }}
+      KERNEL_RUN_ID: ${{ needs.image.outputs.kernel_run_id }}
+      OMNI_KERNEL_ARTIFACT: omni-kernel-debs
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # release notes diff against the previous tag
+
+      - name: Resolve the tag
+        id: tag
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = 'push' ]; then
+            tag="${GITHUB_REF_NAME}"
+            prerelease=false
+          else
+            tag="${{ inputs.tag }}"
+            prerelease="${{ inputs.prerelease }}"
+          fi
+
+          case "$tag" in
+            v*) ;;
+            *) echo "::error::tag '$tag' does not start with 'v'"; exit 1 ;;
+          esac
+
+          echo "tag=${tag}"        >> "$GITHUB_OUTPUT"
+          echo "prerelease=${prerelease}" >> "$GITHUB_OUTPUT"
+
+          # Previous tag, for the changelog. Empty on the first release, which
+          # is not an error -- it just means "everything up to here".
+          prev=$(git tag --list 'v*' --sort=-v:refname \
+                 | grep -Fxv "$tag" | head -1 || true)
+          echo "prev=${prev}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag} prerelease=${prerelease} prev=${prev:-<none>}"
+
+      - name: Download the slot image
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: omni-slot-image
+          path: release
+
+      - name: Download the kernel .debs that went into it
+        run: |
+          set -euo pipefail
+          mkdir -p kernel
+          if [ -z "${KERNEL_RUN_ID}" ]; then
+            echo "::error::the image job did not report which kernel run it used"
+            exit 1
+          fi
+          gh run download "${KERNEL_RUN_ID}" \
+            --name "${OMNI_KERNEL_ARTIFACT}" --dir kernel
+          find kernel -type f | sort
+
+      - name: Assemble the release
+        id: assemble
+        run: |
+          set -euo pipefail
+          cd release
+
+          for f in omni-slot.ext4.gz omni-slot.ext4.sha256 omni-slot.ext4.size; do
+            [ -s "$f" ] || { echo "::error::missing or empty: $f"; exit 1; }
+          done
+
+          img_sha=$(cut -d' ' -f1 < omni-slot.ext4.sha256)
+          img_size=$(tr -dc '0-9' < omni-slot.ext4.size)
+          gz_bytes=$(stat -c%s omni-slot.ext4.gz)
+
+          # Re-derive the compressed digest here rather than trusting a sidecar:
+          # this is the file people actually download.
+          gz_sha=$(sha256sum omni-slot.ext4.gz | cut -d' ' -f1)
+
+          # The kernel version as `uname -r` will report it on the device,
+          # rebuilt from the image's own manifest rather than typed. Armbian
+          # deb names carry the Armbian version where you would expect the
+          # kernel one -- linux-image-current-meson64_26.08.0-trunk_arm64__6.18.41-S2fe5-...
+          # -- so the pieces come from two fields: the base after the DOUBLE
+          # underscore, and kernel-package. Verified to reproduce
+          # 6.18.41-current-meson64, which is what the running device reports.
+          kpkg=$(awk '$1=="kernel-package"{print $2}' omni-slot.manifest)
+          kbase=$(sed -n 's/.*linux-image-[^ ]*__\([0-9][0-9.]*\)-.*/\1/p' omni-slot.manifest | head -1)
+          if [ -n "$kbase" ] && [ -n "$kpkg" ]; then
+            kver="${kbase}-${kpkg}"
+          else
+            kver="${kpkg:-unknown}"
+          fi
+
+          pkgs=$(wc -l < omni-slot.packages | tr -d ' ')
+
+          {
+            echo "img_sha=${img_sha}"
+            echo "img_size=${img_size}"
+            echo "gz_sha=${gz_sha}"
+            echo "gz_bytes=${gz_bytes}"
+            echo "kver=${kver}"
+            echo "pkgs=${pkgs}"
+          } >> "$GITHUB_OUTPUT"
+
+          # One checksums file covering everything that ships.
+          cd ..
+          sha256sum release/* kernel/* | sed 's|release/||; s|kernel/||' > SHA256SUMS
+          mv SHA256SUMS release/
+          echo '--- SHA256SUMS'
+          cat release/SHA256SUMS
+
+      - name: Write the release notes
+        run: |
+          set -euo pipefail
+          TAG='${{ steps.tag.outputs.tag }}'
+          PREV='${{ steps.tag.outputs.prev }}'
+
+          {
+            cat <<EOF
+          Debian trixie A/B slot image for the Avast Omni (Amlogic A113D, meson-axg).
+
+          | | |
+          |---|---|
+          | kernel | \`${{ steps.assemble.outputs.kver }}\` |
+          | packages | ${{ steps.assemble.outputs.pkgs }} |
+          | image (uncompressed) | ${{ steps.assemble.outputs.img_size }} bytes |
+          | download | ${{ steps.assemble.outputs.gz_bytes }} bytes |
+          | built by | [run \`${GITHUB_RUN_ID}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) |
+          | kernel from | [run \`${KERNEL_RUN_ID}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${KERNEL_RUN_ID}) |
+
+          ### Verify before you flash
+
+          \`\`\`
+          sha256sum -c SHA256SUMS
+          gzip -dc omni-slot.ext4.gz | head -c ${{ steps.assemble.outputs.img_size }} | sha256sum
+          # expect: ${{ steps.assemble.outputs.img_sha }}
+          \`\`\`
+
+          ### Install
+
+          This writes the **inactive** A/B slot; the running slot is untouched
+          and stays bootable throughout. Read
+          [docs/RUNBOOK.md](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/${TAG}/docs/RUNBOOK.md)
+          first — it has the recovery ladder.
+
+          \`omni-flash.sh\` runs **on the device**, not over ssh from a laptop,
+          and it writes, verifies, arms and reboots in one go — arming is its
+          step 5, so there is no separate \`omni-arm.sh\` to run:
+
+          \`\`\`
+          # on the Omni:
+          omni-flash.sh \\
+              --image  <url-of-omni-slot.ext4.gz> \\
+              --sha256 ${{ steps.assemble.outputs.img_sha }} \\
+              --size   ${{ steps.assemble.outputs.img_size }}
+
+          # it reboots into the new slot. once that slot is up and healthy:
+          omni-commit.sh
+          \`\`\`
+
+          Use \`--no-reboot\` to keep the armed window open, or \`--no-arm\` to
+          write and verify without changing which slot boots.
+
+          **If you do not run \`omni-commit.sh\`, the next reboot rolls back.**
+          That is the safety property, not a bug — the login banner shows the
+          slot and whether it is ARMED or committed.
+
+          ### Not in this release
+
+          No bootloader. U-Boot 2018.09 and its Mender environment are never
+          rebuilt or rewritten by this project; the kernel, DTB and initramfs
+          are loaded from \`/boot\` inside the slot.
+          EOF
+
+            if [ -n "$PREV" ]; then
+              echo
+              echo "### Changes since ${PREV}"
+              echo
+              git log --no-merges --pretty='- %s (%h)' "${PREV}..${TAG}" 2>/dev/null \
+                || git log --no-merges --pretty='- %s (%h)' "${PREV}..HEAD"
+              echo
+              echo "**Full diff**: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${PREV}...${TAG}"
+            else
+              echo
+              echo "### First release"
+              echo
+              echo "Replaces the Yocto (kirkstone) \`apollo-image\` on kernel 5.4.62, which"
+              echo "went EOL in December 2025. The Yocto tree was removed from this repo"
+              echo "once Debian was booted and committed on hardware; it remains in history."
+            fi
+          } > NOTES.md
+
+          echo '--- notes:'
+          cat NOTES.md
+
+      - name: Publish
+        run: |
+          set -euo pipefail
+          TAG='${{ steps.tag.outputs.tag }}'
+          args=(--title "Omni ${TAG}" --notes-file NOTES.md)
+          # NOT `[ ... ] && args+=(...)`: under `set -e` a false test makes the
+          # whole step exit non-zero, so a normal (non-prerelease) release would
+          # "fail" having published nothing.
+          if [ '${{ steps.tag.outputs.prerelease }}' = 'true' ]; then
+            args+=(--prerelease)
+          fi
+
+          # --target matters for a manual run: it creates the tag at the commit
+          # that was actually built, not at whatever the branch has moved to.
+          if [ '${{ github.event_name }}' != 'push' ]; then
+            args+=(--target "${GITHUB_SHA}")
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::release ${TAG} exists; uploading assets with --clobber"
+            gh release upload "$TAG" release/* kernel/* --clobber
+          else
+            gh release create "$TAG" "${args[@]}" release/* kernel/*
+          fi
+
+          gh release view "$TAG" --json tagName,isPrerelease,assets \
+            --jq '"published: \(.tagName) prerelease=\(.isPrerelease)\nassets:\n" + (.assets|map("  \(.name)  \(.size) bytes")|join("\n"))'

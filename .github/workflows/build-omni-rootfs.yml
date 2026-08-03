@@ -97,6 +97,28 @@ on:
         default: false
         type: boolean
 
+  # Called by release.yml so a tagged release ships the image THIS workflow
+  # built and asserted, rather than a second copy of the build steps that
+  # could drift out of agreement with it. Inputs mirror workflow_dispatch.
+  workflow_call:
+    inputs:
+      kernel_run_id:
+        required: false
+        default: ''
+        type: string
+      slot_size_mib:
+        required: false
+        default: ''
+        type: string
+      strict:
+        required: false
+        default: false
+        type: boolean
+    outputs:
+      kernel_run_id:
+        description: 'The build-omni-kernel.yml run the .debs actually came from, resolved. The release attaches that run kernel artifacts so an image and its kernel are published together.'
+        value: ${{ jobs.rootfs.outputs.kernel_run_id }}
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -110,6 +132,9 @@ jobs:
     name: Build slot image and assert invariants
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+
+    outputs:
+      kernel_run_id: ${{ steps.kernelrun.outputs.run_id }}
 
     env:
       GH_TOKEN: ${{ github.token }}
