@@ -44,7 +44,14 @@ USAGE
   omni-flash.sh --image <URL|FILE> --sha256 <HEX64> --size <BYTES> [options]
 
 REQUIRED
-  --image SRC     http(s)/ftp URL or a local file.  May be raw or compressed
+  --image SRC     http(s)/ftp URL, a local file, or "-" to read the image from
+                  stdin.  "-" is the way in when the device's curl has no TLS
+                  and /data is too small to stage:
+                      curl -fL <url> | ssh root@omni \
+                          'omni-flash.sh --image - --compression gzip ...'
+                  It needs an explicit --compression (no filename to sniff), and
+                  cannot be combined with --stage yes: a pipe is read once.
+                  May be raw or compressed
                   (.gz/.xz/.zst - see --compression).
   --sha256 HEX    sha256 of the DECOMPRESSED image, i.e. of exactly the first
                   <size> bytes that land on the partition.
@@ -410,6 +417,14 @@ warn_watchdog_diversion
 # --- source classification -------------------------------------------------
 SRC_KIND=""
 case "$IMAGE" in
+    # "-" = read the image from stdin. This exists because the stock Yocto image
+    # ships a curl built WITHOUT TLS ("Protocol \"https\" not supported or
+    # disabled in libcurl"), so the device cannot fetch a release itself, and
+    # /data is far too small to stage an 850 MiB image first. Piping in over the
+    # ssh session you already have solves both at once, and costs nothing in
+    # safety: the byte count and the sha256 are still computed on the device,
+    # against what actually landed on the slot.
+    -) SRC_KIND=stdin ;;
     http://*|https://*|ftp://*|ftps://*) SRC_KIND=url ;;
     file://*) IMAGE="${IMAGE#file://}"; SRC_KIND=file ;;
     *) SRC_KIND=file ;;
@@ -420,7 +435,10 @@ SRC_BASENAME="${SRC_BASENAME%%\?*}"        # strip any query string
 SRC_BASENAME="${SRC_BASENAME%%#*}"
 SRC_BASENAME=$(basename -- "$SRC_BASENAME")
 
-if [ "$SRC_KIND" = "file" ]; then
+if [ "$SRC_KIND" = "stdin" ]; then
+    SRC_BASENAME=""
+    log "image source: stdin (streamed from the far end of the pipe)"
+elif [ "$SRC_KIND" = "file" ]; then
     [ -f "$IMAGE" ] || die "--image '$IMAGE' is not an existing file (and does not look like a URL)"
     log "image source: local file $IMAGE"
 else
@@ -428,6 +446,15 @@ else
     log "image source: URL $IMAGE"
 fi
 
+if [ "$COMPRESSION" = "auto" ] && [ "$SRC_KIND" = "stdin" ]; then
+    # There is no filename to sniff on a pipe, and the fallback below is "none".
+    # Guessing wrong means writing a still-compressed stream to the slot and only
+    # finding out from the sha256 after the whole transfer -- which over a slow
+    # link is an hour of someone's life. Ask instead.
+    die "--image - needs an explicit --compression (none|gzip|xz|zstd).
+There is no filename to detect it from when the image arrives on a pipe.
+The published omni-slot.ext4.gz is gzip."
+fi
 if [ "$COMPRESSION" = "auto" ]; then
     case "$SRC_BASENAME" in
         *.gz|*.gzip) COMPRESSION=gzip ;;
@@ -464,6 +491,7 @@ STAGE=0
 case "$STAGE_MODE" in
     no) STAGE=0 ;;
     yes)
+        [ "$SRC_KIND" != "stdin" ] || die "--stage yes cannot work with --image -: a pipe can only be read once"
         [ "$SRC_KIND" = "url" ] || die "--stage yes makes no sense for a local file"
         STAGE=1
         ;;
@@ -670,8 +698,9 @@ banner "write the image to p$TARGET ($TGT_DEV)"
 
 stream_source() {
     case "$SRC_KIND" in
-        file) cat -- "$IMAGE" ;;
-        url)  curl -fL --retry 3 --retry-delay 5 --connect-timeout 20 -- "$IMAGE" ;;
+        stdin) cat ;;
+        file)  cat -- "$IMAGE" ;;
+        url)   curl -fL --retry 3 --retry-delay 5 --connect-timeout 20 -- "$IMAGE" ;;
     esac
 }
 decompress() {
