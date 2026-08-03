@@ -4,6 +4,27 @@ on:
   push:
     branches:
       - master
+    # WITHOUT THESE FILTERS this six-hour build fired on EVERY push to master --
+    # documentation, the migration tooling, the Debian rootfs, all of it. None of
+    # that can change the Yocto image. Only the legacy tree and its build harness
+    # can, so only those trigger it.
+    paths:
+      - 'repo/**'
+      - 'scripts/**'
+      - 'Dockerfile'
+      - 'Makefile'
+      - '.gitmodules'
+      - '.github/workflows/build-apollo-image.yml'
+  workflow_dispatch:
+
+# A newer push supersedes an older run of the same ref. Six hours of runner time
+# for a commit nobody will look at again is pure waste.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -12,7 +33,7 @@ jobs:
 
     steps:
     - name: Maximize build space
-      uses: easimon/maximize-build-space@master
+      uses: easimon/maximize-build-space@fc881a613ad2a34aca9c9624518214ebc21dfc0c # v10
       with:
         root-reserve-mb: 1024
         swap-size-mb: 4096
@@ -23,7 +44,7 @@ jobs:
         remove-docker-images: 'true'
 
     - name: Checkout repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         submodules: true  # Initialize and update submodules
 
@@ -53,9 +74,10 @@ jobs:
       working-directory: build/tmp/deploy/images/meson-apollo/
 
     - name: Upload build artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
       with:
-        name: build-artifacts
+        name: apollo-image-yocto
+        if-no-files-found: error
         path: |
             ./build/tmp/deploy/images/meson-apollo/apollo-image-6.6.1-prod-meson-apollo.ext4.bz2
             ./build/tmp/deploy/images/meson-apollo/apollo-image-6.6.1-prod-meson-apollo.manifest

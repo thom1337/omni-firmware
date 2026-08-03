@@ -44,6 +44,18 @@ BLOCK_SIZE=4096
 # SLOT_BYTES below is the hard ceiling asserted before mke2fs runs.
 BLOCKS=217600            # 217600 * 4096 = 850 MiB = exactly one A/B slot
 SLOT_BYTES=891289600     # measured size of p1/p2; see docs/HARDWARE.md
+
+# --- Tailscale --------------------------------------------------------------
+# Static tarball, NOT pkgs.tailscale.com's apt repo. Same reasoning this file
+# already applies to docker-ce: an appliance that sits in a closet for years
+# should not carry a third-party apt source and signing key that can change
+# under it. Tailscale is not in Debian trixie, so a pinned tarball plus a
+# checksum is the auditable alternative. Bump the version and the digest
+# together -- the build refuses to proceed if they disagree.
+TAILSCALE=1
+TAILSCALE_VERSION="1.98.10"
+TAILSCALE_SHA256="d74a84e07cb1948d9f09a23ae161417c6127e562949773705c95d0762be2809d"
+TAILSCALE_URL_BASE="https://pkgs.tailscale.com/stable"
 BLOCKS_EXPLICIT=0
 BLOCKS_FROM=""
 
@@ -1004,6 +1016,14 @@ TS_TGZ=""
 if [ "$TAILSCALE" = 1 ]; then
 	TS_TGZ="${WORK_DIR}/tailscale_${TAILSCALE_VERSION}_arm64.tgz"
 	TS_URL="${TAILSCALE_URL_BASE}/tailscale_${TAILSCALE_VERSION}_arm64.tgz"
+	if [ "$DRY_RUN" = 1 ]; then
+		# Do not pull 32 MiB on a dry run; the point of --dry-run is to validate
+		# preconditions cheaply. The real run still verifies the digest.
+		info "DRY RUN: would fetch and sha256-verify ${TS_URL}"
+		info "DRY RUN:   expecting ${TAILSCALE_SHA256}"
+		TS_TGZ=""
+		TAILSCALE=0
+	else
 	info "fetching Tailscale ${TAILSCALE_VERSION} (arm64) from ${TS_URL}"
 	curl -fL --retry 3 --retry-delay 5 --connect-timeout 20 -o "$TS_TGZ" "$TS_URL" \
 		|| die "could not download Tailscale ${TAILSCALE_VERSION}"
@@ -1016,7 +1036,8 @@ if [ "$TAILSCALE" = 1 ]; then
 Either the pin is stale (bump TAILSCALE_VERSION and TAILSCALE_SHA256 together)
 or the download is not what it claims to be. Refusing to build."
 	fi
-	ok "Tailscale ${TAILSCALE_VERSION} verified: ${got}"
+	info "Tailscale ${TAILSCALE_VERSION} verified: ${got}"
+	fi
 fi
 
 DEB_LIST="${WORK_DIR}/kernel-debs.list"

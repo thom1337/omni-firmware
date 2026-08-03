@@ -74,7 +74,10 @@ on:
       - master
     paths:
       - 'rootfs/**'
-      - 'tools/**'
+      # Same reasoning as the kernel workflow: 'tools/**' pulled in the serial
+      # console helpers and the on-device A/B scripts, which cannot change the
+      # image. Only the invariant checker this job runs is relevant.
+      - 'tools/check-image-invariants.sh'
       - '.github/workflows/build-omni-rootfs.yml'
   workflow_dispatch:
     inputs:

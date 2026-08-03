@@ -65,7 +65,15 @@ on:
       - master
     paths:
       - 'board/**'
-      - 'tools/**'
+      # NOT 'tools/**'. That matched every device-side script and every serial
+      # console helper, none of which can affect a kernel build -- so routine
+      # tooling commits kept starting a 60-90 minute build that the next push
+      # then cancelled, and the kernel was effectively never validated. Only the
+      # tools this workflow actually RUNS belong here.
+      - 'tools/sync-armbian-board.sh'
+      - 'tools/check-kconfig-invariants.sh'
+      - 'tools/validate-dts.sh'
+      - 'tools/dts-validate.Dockerfile'
       - 'armbian'          # the submodule gitlink: a pin bump must be CI-verified (risk 8)
       - '.gitmodules'
       - '.github/workflows/build-omni-kernel.yml'
