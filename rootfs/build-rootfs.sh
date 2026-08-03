@@ -531,6 +531,10 @@ done
 for k in "${chroot_dir}"/etc/ssh/ssh_host_*_key "${chroot_dir}"/etc/wireguard/*.key; do
 	[ -f "$k" ] && chmod 0600 "$k"
 done
+# sshd refuses an authorized_keys that is writable by group or other, and with
+# password auth off that refusal means no network login at all.
+[ -f "${chroot_dir}/root/.ssh/authorized_keys" ] && \
+	chmod 0600 "${chroot_dir}/root/.ssh/authorized_keys"
 exit 0
 HOOK10
 

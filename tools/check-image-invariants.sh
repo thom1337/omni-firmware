@@ -1037,9 +1037,55 @@ check_tailscale() {
 	ok "no Tailscale auth key baked into the image"
 }
 
+check_ssh_authorized_keys() {
+	# The lockout check. sshd_config.d/10-omni.conf sets PasswordAuthentication
+	# no and the build locks root's password to '*', so a key is the ONLY way in
+	# over the network. An image with hardened SSH and no key is reachable solely
+	# over the serial console -- which on a deployed unit in a closet means a site
+	# visit. That combination must fail the build, not surprise someone later.
+	local f=/root/.ssh/authorized_keys keys=0 bad=0 line
+	if [ "$(r_type "$f")" = file ]; then
+		while IFS= read -r line; do
+			case "$line" in
+			''|'#'*) continue ;;
+			ssh-ed25519\ *|ssh-rsa\ *|ecdsa-sha2-*|sk-ssh-ed25519*|sk-ecdsa-*)
+				keys=$((keys + 1)) ;;
+			*) bad=$((bad + 1)) ;;
+			esac
+		done <<<"$(r_cat "$f")"
+	fi
+
+	if [ "$keys" -gt 0 ]; then
+		ok "$f has $keys usable public key(s)"
+	else
+		fail "no usable public key in $f, but password authentication is disabled" \
+			"PasswordAuthentication is no and root's password is locked to '*', so a key is the only network login. With none baked in, this image is reachable ONLY over the serial console. Add a key to rootfs/overlay/root/.ssh/authorized_keys, or accept serial-only access deliberately."
+	fi
+	[ "$bad" -gt 0 ] && warn "$bad unrecognised non-comment line(s) in $f" \
+		"sshd ignores lines it cannot parse; a mangled key silently is not a key."
+
+	# A private key here would be a serious mistake in a shareable image.
+	local priv
+	for priv in /root/.ssh/id_rsa /root/.ssh/id_ed25519 /root/.ssh/id_ecdsa; do
+		if [ "$(r_type "$priv")" = file ]; then
+			fail "a PRIVATE key is baked into the image at $priv" \
+				"Every device written from this image would share one identity, and the key is in whatever repo or artefact store the image lives in. Only public keys belong in an image."
+		fi
+	done
+}
+
 check_data_symlinks() {
 	local p t
-	for p in /root/.ssh /etc/wireguard; do
+	# NOTE: /root/.ssh is deliberately NOT in this list any more. The plan's
+	# original design symlinked it into /data so keys survived an A/B flip, but
+	# sshd_config.d/10-omni.conf supersedes that with
+	#     AuthorizedKeysFile .ssh/authorized_keys /data/ssh/authorized_keys
+	# which is strictly better: it reads BOTH locations, so keys survive a flip
+	# via /data AND still work when /data is missing. A symlink would instead
+	# dangle when p3 fails to mount -- and /data is nofail precisely so a bad p3
+	# cannot stop the boot, which would then silently cost the only network
+	# login. check_ssh_authorized_keys covers the image side.
+	for p in /etc/wireguard; do
 		t=$(r_type "$p")
 		case "$t" in
 		symlink)
@@ -1221,6 +1267,7 @@ if [ -n "$ROOTFS" ]; then
 	wanted network-naming && check_network_naming
 	wanted sshd && check_sshd
 	wanted modprobe-blacklist && check_modprobe_blacklist
+	wanted ssh-authorized-keys && check_ssh_authorized_keys
 	wanted tailscale && check_tailscale
 	wanted data-symlinks && check_data_symlinks
 else
