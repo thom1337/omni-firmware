@@ -305,12 +305,17 @@ U-Boot's network works and `ethaddr` survived) or USB boot. This is exactly why
 ### Commands, in order
 
 ```
-# 0. Missing tools. The stock image ships e2fsprogs-mke2fs only, and none of the
-#    Phase 4 gate tools. Build e2fsprogs-e2fsck, e2fsprogs-dumpe2fs, ethtool,
-#    iperf3 and fio from the existing bitbake tree and dpkg -i them.
-$ make all TARGET="e2fsprogs ethtool iperf3 fio"
-$ scp build/tmp/deploy/deb/aarch64/*.deb root@omni:/tmp/
-# dpkg -i /tmp/*.deb
+# 0. Missing tools.
+#    On a MIGRATED (Debian) device these are just packages:
+# apt-get install -y e2fsprogs ethtool iperf3 fio
+#
+#    On a STOCK (Yocto) device they are not present -- that image ships
+#    e2fsprogs-mke2fs only, and none of the Phase 4 gate tools. The bitbake
+#    tree that built them was removed from this repo along with the rest of
+#    Yocto; restore it from the last commit that had it:
+# git checkout 0e0f8bc -- repo Dockerfile Makefile scripts
+# make all TARGET="e2fsprogs ethtool iperf3 fio"
+# scp build/tmp/deploy/deb/aarch64/*.deb root@omni:/tmp/ && dpkg -i /tmp/*.deb
 
 # 1. BACKUP — before any fw_setenv. Nothing in this script writes to the device.
 $ tools/omni-backup.sh root@omni --quiesce --outdir ./omni-backups
