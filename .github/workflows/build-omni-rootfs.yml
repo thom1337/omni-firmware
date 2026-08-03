@@ -302,7 +302,19 @@ jobs:
       - name: Build the slot image
         run: |
           set -euo pipefail
-          args=(--kernel-debs "${OMNI_DEBS}")
+          # --privileged is required HERE and is not paranoia. mmdebstrap runs
+          # --mode=unshare, which calls newuidmap(1) to write a multi-range
+          # /proc/PID/uid_map. build-in-docker.sh's normal path already passes
+          # seccomp=unconfined + apparmor=unconfined, and that is enough on a
+          # normal workstation -- but on a GitHub runner it still dies with
+          #     newuidmap: write to uid_map failed: Operation not permitted
+          #     E: failed to unshare the user namespace
+          # because the container lacks CAP_SETUID/CAP_SETGID over the host's
+          # subuid ranges. The runner is an ephemeral single-tenant VM that is
+          # destroyed after the job, so the blast radius of --privileged is the
+          # job itself. Do NOT copy this flag into anything that runs on a
+          # shared or long-lived host.
+          args=(--privileged --kernel-debs "${OMNI_DEBS}")
 
           if [ -n "${OMNI_SLOT_SIZE_MIB}" ]; then
             case "${OMNI_SLOT_SIZE_MIB}" in
