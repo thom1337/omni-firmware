@@ -128,8 +128,13 @@ on:
         description: 'The build-omni-kernel.yml run the .debs actually came from, resolved. The release attaches that run kernel artifacts so an image and its kernel are published together.'
         value: ${{ jobs.rootfs.outputs.kernel_run_id }}
 
+# The variant is part of the key. In a reusable workflow `github.workflow` is
+# the CALLER's name, so release.yml calling this twice -- once for the slot
+# image and once for the recovery image -- put both jobs in the same group and,
+# with cancel-in-progress, the second immediately cancelled the first:
+#   "Canceling since a higher priority waiting request for Release-... exists"
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.variant || 'slot' }}
   cancel-in-progress: true
 
 permissions:
