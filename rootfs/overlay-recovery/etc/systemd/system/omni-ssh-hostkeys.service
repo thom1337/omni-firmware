@@ -1,0 +1,28 @@
+[Unit]
+Description=Seed persistent sshd host keys on /data (survive an A/B slot flip)
+Documentation=file:/usr/lib/omni/omni-ssh-hostkeys
+
+# /data must be there before we can write to it, and sshd must not read its
+# config before the keys exist.  Both are ordering-only: the script itself is a
+# no-op when /data is absent, and ssh.service keeps its /etc/ssh fallback keys,
+# so nothing here can stop sshd starting.
+After=local-fs.target data.mount
+Wants=data.mount
+Before=ssh.service sshd.service
+
+ConditionPathIsMountPoint=/data
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/omni/omni-ssh-hostkeys
+TimeoutStartSec=120
+# Key generation on a Cortex-A53 with a cold entropy pool can be slow; it must
+# never take the box down with it.
+SuccessExitStatus=0 1
+StandardOutput=journal
+StandardError=journal+console
+SyslogIdentifier=omni-ssh-hostkeys
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,32 @@
+[Unit]
+Description=Enable UDP GRO forwarding on the NIC (Tailscale exit-node throughput)
+Documentation=https://tailscale.com/kb/1320/performance-best-practices
+# Tailscale's own guidance for a machine that FORWARDS tailnet traffic -- an
+# exit node or a subnet router. Without it every forwarded UDP packet is handled
+# individually instead of in GRO batches, and on a 1.4 GHz A53 that difference
+# is most of the achievable throughput.
+#
+# It is a per-interface setting that does not survive a link going down and
+# coming back, hence a unit rather than a one-off command.
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/usr/sbin/ethtool
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The interface is found rather than named: this image ships one .network file
+# matching e*, and the kernel has called it eth0 in the past and end0 since the
+# move to predictable names. Hard-coding end0 would leave the setting silently
+# unapplied if that ever changes again.
+ExecStart=/bin/sh -c 'for i in $(ls /sys/class/net | grep -vx lo); do \
+    /usr/sbin/ethtool -K "$i" rx-udp-gro-forwarding on rx-gro-list off || true; \
+done'
+# Never block boot: this is a throughput optimisation, and a NIC whose driver
+# does not support these knobs is a slower box, not a broken one.
+SuccessExitStatus=0 1
+StandardOutput=journal
+SyslogIdentifier=omni-nic-offload
+
+[Install]
+WantedBy=multi-user.target

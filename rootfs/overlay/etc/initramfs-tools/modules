@@ -1,0 +1,73 @@
+# /etc/initramfs-tools/modules -- Avast Omni (Amlogic A113D / meson-axg).
+#
+# MODULES=list in initramfs.conf means ONLY what is named here (plus everything
+# modprobe reports as a dependency) is copied into the initramfs.  If a module
+# needed to reach the rootfs is missing from this list the box does not boot: it
+# lands in the initramfs shell on ttyAML0 with "ALERT! /dev/mmcblk0pN does not
+# exist".  Add here, run `update-initramfs -u`, and the post-update hook
+# re-flattens the initramfs onto the U-Boot name automatically.
+#
+# Entries that the kernel config delta builds in (=y) rather than as modules are
+# NOT errors: mkinitramfs runs `modprobe --show-depends`, which prints
+# "builtin <name>" for those, and the awk filter simply skips them.  Listing
+# them anyway is deliberate -- it keeps this file correct against Armbian's
+# stock meson64 config too, where several of them ship as =m.
+#
+# Format: one module per line, optional module parameters after the name.
+
+# --- eMMC: the only path to the rootfs -------------------------------------
+# meson_gx_mmc drives sd_emmc_c (CONFIG_MMC_MESON_GX; forced =y in the config
+# delta).  mmc_block turns the card into /dev/mmcblk0pN.  mmc_core comes in as a
+# dependency of both.
+meson_gx_mmc
+mmc_block
+
+# The eMMC power sequencer referenced by the DTS (&emmc_pwrseq, BOOT_9 lifted
+# from meson-axg-jethome-jethub-j1xx.dtsi).  Without it the card is never reset
+# on a warm boot -- the classic "cold boot works, `reboot` does not" failure.
+pwrseq_emmc
+
+# --- Filesystems ------------------------------------------------------------
+# The A/B slots (p1/p2), the overlay uppers (p5/p6) and /data (p3) are all ext4.
+ext4
+# crc16 / mbcache / jbd2 arrive automatically as ext4 dependencies.
+#
+# crc32c_generic is listed defensively.  The A/B slots are built with
+# `-O ^metadata_csum` (cloned from p1's kirkstone e2fsprogs 1.46 feature set, so
+# that U-Boot's ext4 driver keeps working), so they do NOT need it -- but /data
+# (p3) and the overlay uppers (p5/p6) are whatever mkfs made them, and on a
+# trixie e2fsprogs 1.47 that means metadata_csum ON by default.  A missing
+# crc32c implementation there shows up as a mount failure, not a warning.
+crc32c_generic
+
+# The merged root itself.  CONFIG_OVERLAY_FS is forced =y in the config delta;
+# keep the line so an accidental =m still produces a bootable initramfs.
+overlay
+
+# --- Ethernet ---------------------------------------------------------------
+# Not needed to reach the rootfs, but cheap, and it means the initramfs rescue
+# shell after a panic() can bring up the NIC instead of being serial-only.
+# realtek = the RTL8211F PHY driver.  CONFIG_REALTEK_PHY is ABSENT from
+# Armbian's stock meson64 config (they enable ICPLUS_PHY for JetHub); without it
+# the PHY degrades to genphy and gigabit "mostly works".
+realtek
+dwmac_meson8b
+stmmac_platform
+stmmac
+
+# --- Console / front panel --------------------------------------------------
+# meson_uart is what console=ttyAML0 rides on.  It is =y in every meson64 config
+# and is listed for documentation value only.
+meson_uart
+# The power LED the overlay script turns green on entry.  Optional; if these are
+# built in or absent the LED block in omni-overlay is a no-op by design.
+pwm_meson
+leds_pwm
+
+# --- Deliberately NOT here --------------------------------------------------
+# meson_nand   -- mainline's nand-controller@7800 claims the same register
+#                 window as sd_emmc_c and defaults to okay.  The DTS disables
+#                 &nfc and the config delta sets CONFIG_MTD_NAND_MESON=n; do not
+#                 let it back in through the initramfs.
+# usb/xhci     -- no known routed USB port until Phase 5 answers it.
+# dm_mod, md, lvm, crypto targets -- the partition layout is fixed and flat.

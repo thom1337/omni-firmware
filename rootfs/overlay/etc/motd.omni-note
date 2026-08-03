@@ -1,0 +1,13 @@
+This directory note is not read by anything.
+
+/etc/motd is shipped EMPTY on purpose. Debian's stock /etc/motd (286 bytes of
+"the exact distribution terms ... ABSOLUTELY NO WARRANTY") is printed by
+pam_motd on every serial and SSH login, immediately before our own banner, and
+two banners on an 80-column console at 115200 baud is just noise. The dynamic
+banner in /etc/update-motd.d/00-omni-banner replaces it.
+
+Debian also ships /etc/update-motd.d/10-uname, which prints the same `uname -a`
+line our banner already reports as `kernel`. It is left in place rather than
+deleted: it is a distro-owned file, removing it invites a package update to put
+it back and look like a regression, and one duplicated line is a smaller problem
+than fighting dpkg.

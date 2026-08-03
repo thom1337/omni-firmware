@@ -1,0 +1,74 @@
+[Unit]
+Description=Commit the running A/B rootfs slot after proving the network works
+Documentation=file:/usr/lib/omni/omni-commit
+
+# ---------------------------------------------------------------------------
+# IMPORTANT: the After= lines below are ORDERING ONLY.  They are NOT the guard.
+#
+# systemd's After= expresses "if both units are in this transaction, start me
+# second".  It creates no requirement, so network-online.target can be reached
+# in milliseconds when nothing pulls it in -- and a commit guard built on
+# `After=network-online.target` then fires before the NIC has even negotiated
+# link, permanently disarming a slot that has never had an address.  That single
+# mistake converts the whole A/B design into a one-way trip.
+#
+# So: order here, PROVE in the script.  /usr/lib/omni/omni-commit independently
+# re-checks carrier + default route + a completed outbound TCP connect, in a
+# bounded retry loop, and refuses to commit unless all three hold.
+#
+# Wants= (not Requires=) on network-online.target: networkd-wait-online should
+# be pulled in and given its chance, but a wait-online timeout must not fail
+# this unit before its own retry loop has even started.
+# ---------------------------------------------------------------------------
+Wants=network-online.target
+After=network-online.target
+After=network.target systemd-networkd.service systemd-resolved.service
+After=local-fs.target data.mount
+
+# Pointless to run if the U-Boot environment is unreachable.
+ConditionPathExists=/etc/fw_env.config
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# Tunables.  50 attempts x 10 s = ~500 s of evidence gathering, which finishes
+# comfortably inside omni-deadman.timer's OnBootSec=15min (900 s).
+# INVARIANT: tries*interval < TimeoutStartSec < 900 s.  Break it in either
+# direction and the deadman reboots a slot that was about to commit, or the
+# commit hangs past the deadman and nothing ever rolls back.
+Environment=OMNI_COMMIT_TRIES=50
+Environment=OMNI_COMMIT_INTERVAL=10
+Environment=OMNI_COMMIT_CONNECT_TIMEOUT=5
+# Quoted: systemd splits Environment= on whitespace and would otherwise read
+# "9.9.9.9:53" as a second, invalid assignment and silently drop it.
+Environment="OMNI_COMMIT_TARGETS=1.1.1.1:53 9.9.9.9:53 8.8.8.8:53 deb.debian.org:80"
+# Optional local override without editing this unit (file need not exist):
+EnvironmentFile=-/etc/default/omni-commit
+
+ExecStart=/usr/lib/omni/omni-commit
+TimeoutStartSec=700
+
+# No Restart=.  The bounded loop inside the script IS the retry policy; a
+# systemd-level restart would push the evidence window past the deadman.  A
+# failure here is supposed to be loud and to be followed by a rollback.
+
+# Log to the serial console as well as the journal: ttyAML0 is the recovery
+# channel, and "did it commit?" is the first question anyone will ask there.
+StandardOutput=journal+console
+StandardError=journal+console
+SyslogIdentifier=omni-commit
+
+# Deliberately light sandboxing.  This unit writes the single, non-redundant
+# U-Boot environment on /dev/mmcblk0boot0 and pokes
+# /sys/block/mmcblk0boot0/force_ro.  DeviceAllow=/ProtectSystem=strict/
+# ProtectKernelTunables all have plausible ways to break exactly that, and a
+# sandbox that silently blocks the commit costs a working slot.  The script runs
+# as root by necessity; hardening it further buys less than it risks.
+User=root
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

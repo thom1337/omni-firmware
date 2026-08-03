@@ -1,0 +1,342 @@
+#!/bin/sh
+#
+# /etc/initramfs-tools/scripts/local-bottom/omni-overlay
+#
+# Avast Omni overlay-root assembly, ported from the Yocto initrd:
+#   repo/meta-apollo/recipes-core/initrdscripts/initrd-apollo/init
+#
+# CONTRACT (initramfs-tools 0.14x, verified against /usr/share/initramfs-tools):
+#   * scripts/local::local_mount_root() has already mounted the lower rootfs at
+#     ${rootmnt} (=/root) and exported ${ROOT} as the resolved device node.
+#   * local-bottom scripts are EXECUTED (not sourced) from ${initdir}/ORDER, so
+#     nothing from /scripts/functions is in scope until we source it ourselves.
+#   * After we return, init runs /scripts/init-bottom (udev moves /dev into
+#     ${rootmnt}/dev), moves /run, /sys and /proc into ${rootmnt}, and finally
+#     `exec run-init ${rootmnt} ${init}`.
+#   => Therefore this script MUST end with the merged overlay mounted at
+#      ${rootmnt}, not at some private path, or run-init pivots into the bare
+#      lower slot and every write dirties the A/B rootfs.
+#
+# THE THREE MANDATED FIXES vs. the Yocto original:
+#   1. `readlink -f "$ROOT"` instead of the get_last_char() single-character
+#      loop.  The old hack silently produced garbage for anything that was not
+#      exactly one trailing digit (a by-uuid symlink, /dev/mmcblk0p10, ...).
+#   2. `mount -o remount,ro` on the lower BEFORE overlaying.  The stored U-Boot
+#      CONFIG_BOOTARGS is "rootwait rw console=ttyAML0" -- there is no `ro`, so
+#      initramfs-tools sets readonly=n, passes -w and mounts the slot READ-WRITE.
+#      Without this remount the "immutable" A/B slot is dirtied on every single
+#      boot (atime, orphan-inode replay, journal recovery) and the two slots
+#      stop being byte-comparable.
+#   3. panic "..." on EVERY failure.  A fault must drop the operator into the
+#      initramfs shell on ttyAML0, never hang.  The box is headless in a closet;
+#      a hang is a truck roll.
+#
+# Overlay upper partition = root partition + 4  (p1->p5 slot A, p2->p6 slot B).
+#
+# Debug escape hatches, settable from the U-Boot "=>" prompt for one boot only
+# (setenv bootargs ... ; NEVER saveenv -- MENDER_BOOTARGS re-prepends root=):
+#   omni.overlay=off            boot the bare lower slot read-write, no overlay
+#   omni.upper=/dev/mmcblk0pN   use an explicit upper device
+#
+# Must be mode 0755.
+
+PREREQS=""
+prereqs() { echo "$PREREQS"; }
+
+case "${1:-}" in
+prereqs)
+	prereqs
+	exit 0
+	;;
+-h|--help)
+	sed -n '2,/^$/p' "$0"
+	exit 0
+	;;
+esac
+
+# ---------------------------------------------------------------------------
+# panic(): prefer initramfs-tools' own, which prints, runs /scripts/panic and
+# opens an interactive shell on the console.  Keep a self-contained fallback so
+# a broken/absent /scripts/functions cannot turn a diagnosable fault into a
+# silent hang.
+#
+# NOTE on the `panic=` kernel parameter: initramfs-tools' panic() REBOOTS (or
+# halts) instead of giving you a shell when `panic=` is on the cmdline.  The
+# production bootargs have no `panic=`, so faults land in a shell.  If `panic=10`
+# is ever added as belt-and-braces for the kernel-side rollback story, remember
+# that it also removes the initramfs rescue shell.
+# ---------------------------------------------------------------------------
+if [ -r /scripts/functions ]; then
+	# shellcheck source=/dev/null disable=SC1091
+	. /scripts/functions
+fi
+
+if ! command -v panic >/dev/null 2>&1; then
+	panic() {
+		echo ""
+		echo "omni-overlay: PANIC: $*"
+		echo "omni-overlay: dropping to a shell on the console."
+		if [ -x /bin/sh ]; then
+			PS1='(omni-initramfs) ' /bin/sh -i </dev/console >/dev/console 2>&1
+		else
+			echo "omni-overlay: no /bin/sh -- sleeping forever"
+			while : ; do sleep 3600; done
+		fi
+	}
+fi
+
+omni_log() { echo "omni-overlay: $*"; }
+
+# Never continue past a failure.  If the operator exits the rescue shell we
+# reboot rather than switch_root into a non-overlaid slot: booting the bare
+# lower read-write is precisely the silent corruption this script exists to
+# prevent.
+omni_panic() {
+	panic "omni-overlay: $*"
+	echo "omni-overlay: rescue shell exited; rebooting rather than booting without the overlay."
+	sync 2>/dev/null || :
+	if command -v reboot >/dev/null 2>&1; then
+		reboot -f
+	fi
+	echo b >/proc/sysrq-trigger 2>/dev/null || :
+	while : ; do sleep 3600; done
+}
+
+# ---------------------------------------------------------------------------
+# Front-panel LED: green/power on, app LEDs off, exactly as the Yocto initrd
+# did.  Purely cosmetic -- a missing LED must never stop the boot, so this is
+# the one deliberately non-fatal block in the script.
+# ---------------------------------------------------------------------------
+omni_green_led() {
+	for l in /sys/class/leds/apollo:app1/brightness /sys/class/leds/apollo:app2/brightness; do
+		[ -w "$l" ] && echo 0 >"$l" 2>/dev/null
+	done
+	[ -w /sys/class/leds/apollo:power/brightness ] &&
+		echo 250 >/sys/class/leds/apollo:power/brightness 2>/dev/null
+	return 0
+}
+omni_green_led
+
+# ---------------------------------------------------------------------------
+# Kernel command line options
+# ---------------------------------------------------------------------------
+OMNI_OVERLAY_ENABLED=1
+OMNI_UPPER_OVERRIDE=""
+OMNI_RECOVERY=0
+
+if [ -r /proc/cmdline ]; then
+	for x in $(cat /proc/cmdline); do
+		case "$x" in
+		omni.overlay=off|omni.overlay=0|omni.overlay=no)
+			OMNI_OVERLAY_ENABLED=0 ;;
+		omni.upper=*)
+			OMNI_UPPER_OVERRIDE="${x#omni.upper=}" ;;
+		hard_recovery|factory_reset)
+			# U-Boot's APOLLO_CHECK_RECOVERY prepends these when it diverts
+			# to p7.  p7 carries its own init=/init, so we should not be
+			# running at all -- say so loudly rather than overlay a
+			# recovery rootfs with a slot's stale upper.
+			OMNI_RECOVERY=1 ;;
+		esac
+	done
+fi
+
+if [ "$OMNI_RECOVERY" = 1 ]; then
+	omni_log "recovery boot detected on the kernel command line (hard_recovery/factory_reset)."
+	omni_log "NOT assembling an overlay: recovery must run against the bare p7 rootfs."
+	exit 0
+fi
+
+if [ "$OMNI_OVERLAY_ENABLED" = 0 ]; then
+	omni_log "omni.overlay=off on the command line -- leaving the bare lower slot mounted READ-WRITE."
+	omni_log "WARNING: every write from here on dirties the A/B rootfs slot itself."
+	exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Fix 1: resolve the root device properly.
+# ---------------------------------------------------------------------------
+[ -n "${rootmnt:-}" ]  || omni_panic "\$rootmnt is unset -- initramfs-tools contract broken"
+[ -d "${rootmnt}" ]    || omni_panic "\$rootmnt ($rootmnt) is not a directory"
+[ -n "${ROOT:-}" ]     || omni_panic "\$ROOT is unset -- no root= on the kernel command line?"
+
+if command -v readlink >/dev/null 2>&1; then
+	ROOTFS_DEV=$(readlink -f "$ROOT" 2>/dev/null) || ROOTFS_DEV=""
+	[ -n "$ROOTFS_DEV" ] || ROOTFS_DEV=$ROOT
+else
+	omni_log "no readlink available; using \$ROOT verbatim"
+	ROOTFS_DEV=$ROOT
+fi
+
+[ -b "$ROOTFS_DEV" ] || omni_panic "root device '$ROOTFS_DEV' (from ROOT='$ROOT') is not a block device"
+
+# Confirm something really is mounted at ${rootmnt}; if another script moved
+# things around we must not build an overlay on a wrong pairing.  (grep is
+# provided by busybox in the initramfs; skip the check if it is not.)
+if [ -r /proc/mounts ] && command -v grep >/dev/null 2>&1; then
+	if ! grep -q " ${rootmnt} " /proc/mounts; then
+		omni_panic "nothing is mounted at $rootmnt -- local_mount_root did not run?"
+	fi
+fi
+
+# ---------------------------------------------------------------------------
+# Derive the overlay upper: OVERLAY_PART_NO = ROOT_PART_NO + 4
+#   p1 (slot A) -> p5      p2 (slot B) -> p6
+# Anything else is not an A/B slot and must not be overlaid.
+# ---------------------------------------------------------------------------
+case "$ROOTFS_DEV" in
+/dev/mmcblk[0-9]*p[0-9]*) ;;
+*) omni_panic "root device '$ROOTFS_DEV' is not an eMMC partition (expected /dev/mmcblkXpN)" ;;
+esac
+
+ROOT_DISK=${ROOTFS_DEV%p*}
+ROOT_PART_NO=${ROOTFS_DEV##*p}
+
+case "$ROOT_PART_NO" in
+''|*[!0-9]*) omni_panic "cannot parse a partition number out of '$ROOTFS_DEV'" ;;
+esac
+
+case "$ROOT_PART_NO" in
+1|2) ;;
+*)
+	omni_panic "root is $ROOTFS_DEV (partition $ROOT_PART_NO) but the A/B slots are p1 and p2.
+  p3 is /data, p5/p6 are the overlay uppers, p7 is recovery.
+  Refusing to overlay: this pairing is not part of the Mender A/B contract."
+	;;
+esac
+
+OVERLAY_PART_NO=$((ROOT_PART_NO + 4))
+OVERLAY_DEV=${ROOT_DISK}p${OVERLAY_PART_NO}
+
+if [ -n "$OMNI_UPPER_OVERRIDE" ]; then
+	omni_log "omni.upper=$OMNI_UPPER_OVERRIDE overrides the computed $OVERLAY_DEV"
+	OVERLAY_DEV=$OMNI_UPPER_OVERRIDE
+fi
+
+[ -b "$OVERLAY_DEV" ] || omni_panic "overlay upper '$OVERLAY_DEV' is not a block device.
+  Expected partition $OVERLAY_PART_NO (= root partition $ROOT_PART_NO + 4) on $ROOT_DISK.
+  Check the partition table with 'cat /proc/partitions'."
+
+omni_log "slot root=$ROOTFS_DEV  upper=$OVERLAY_DEV"
+
+# ---------------------------------------------------------------------------
+# Fix 2: the lower MUST be read-only before it becomes a lowerdir.
+# bootargs are "rootwait rw console=ttyAML0" -> initramfs-tools mounted it -w.
+# ---------------------------------------------------------------------------
+if ! mount -o remount,ro "$rootmnt"; then
+	omni_panic "cannot remount $rootmnt ($ROOTFS_DEV) read-only.
+  Refusing to overlay a writable lower: that dirties the A/B slot on every boot
+  and destroys the byte-for-byte comparability the migration depends on."
+fi
+omni_log "lower remounted read-only"
+
+# ---------------------------------------------------------------------------
+# Assemble.  Private staging paths inside the initramfs; they are moved into the
+# new root at the end (the initramfs itself is nuked by run-init).
+# ---------------------------------------------------------------------------
+OMNI_LOWER=/omni-lower
+OMNI_UPPER=/omni-upper
+NEWROOT_LOWER=/mnt/omni/lower
+NEWROOT_UPPER=/mnt/omni/upper
+
+mkdir -p "$OMNI_LOWER" "$OMNI_UPPER" ||
+	omni_panic "cannot create staging directories in the initramfs"
+
+# Move the already-mounted lower off ${rootmnt} so the overlay can take its place.
+if ! mount -n -o move "$rootmnt" "$OMNI_LOWER"; then
+	mount -n --move "$rootmnt" "$OMNI_LOWER" ||
+		omni_panic "cannot move the lower from $rootmnt to $OMNI_LOWER"
+fi
+
+# Recovery helper: put the lower back where initramfs-tools left it, so that a
+# failure past this point still yields a system that could in principle boot.
+omni_restore_lower() {
+	mount -n -o move "$OMNI_LOWER" "$rootmnt" 2>/dev/null ||
+		mount -n --move "$OMNI_LOWER" "$rootmnt" 2>/dev/null || :
+}
+
+if ! mount -t ext4 -o noatime,rw "$OVERLAY_DEV" "$OMNI_UPPER"; then
+	omni_restore_lower
+	omni_panic "cannot mount the overlay upper $OVERLAY_DEV as ext4.
+  A fresh or corrupted upper must be recreated from a working system:
+      mkfs.ext4 -F $OVERLAY_DEV
+  (the flash script does this before every rootfs write, deliberately, so that
+  years-old files in the stale upper cannot resurrect over a new lower)."
+fi
+
+# Same directory names the Yocto initrd used, so an existing p5/p6 keeps working
+# and the flash script's mkfs stays the only thing that resets slot state.
+if ! mkdir -p "$OMNI_UPPER/upper" "$OMNI_UPPER/work"; then
+	umount "$OMNI_UPPER" 2>/dev/null || :
+	omni_restore_lower
+	omni_panic "cannot create upper/ and work/ on $OVERLAY_DEV (read-only or full?)"
+fi
+
+# overlayfs refuses to mount if upperdir and workdir are not on the same fs, or
+# if workdir is not empty of stale incompatible state; both hold here.
+if ! mount -t overlay overlay \
+	-o "noatime,lowerdir=$OMNI_LOWER,upperdir=$OMNI_UPPER/upper,workdir=$OMNI_UPPER/work" \
+	"$rootmnt"
+then
+	umount "$OMNI_UPPER" 2>/dev/null || :
+	omni_restore_lower
+	omni_panic "overlay mount failed (lowerdir=$OMNI_LOWER upperdir=$OMNI_UPPER/upper).
+  Is CONFIG_OVERLAY_FS enabled in this kernel, and is 'overlay' in
+  /etc/initramfs-tools/modules?  Check 'cat /proc/filesystems | grep overlay'."
+fi
+
+omni_log "merged overlay mounted at $rootmnt"
+
+# Sanity: the merged view must actually contain an init, otherwise run-init will
+# fall back to /bin/sh and we would rather say why.
+if [ ! -x "$rootmnt/sbin/init" ] && [ ! -L "$rootmnt/sbin/init" ] && [ ! -x "$rootmnt/bin/sh" ]; then
+	omni_panic "the merged root at $rootmnt has neither /sbin/init nor /bin/sh -- wrong lower?"
+fi
+
+# ---------------------------------------------------------------------------
+# Move the lower and the upper into the new root.
+#
+# run-init nukes the initramfs before chrooting; entries on a different st_dev
+# are skipped, so leaving the mounts behind "works" (that is what the Yocto
+# initrd did) -- but they become unreachable, which means systemd can never
+# flush or remount them read-only at shutdown and the upper is dirty-unmounted
+# on every power-down.  Moving them in is the Debian/Ubuntu overlayroot pattern
+# and gives clean shutdowns plus a readable pristine lower for diagnostics.
+#
+# Non-fatal: if this fails we are still fully booted on the overlay.
+# ---------------------------------------------------------------------------
+if mkdir -p "$rootmnt$NEWROOT_LOWER" "$rootmnt$NEWROOT_UPPER" 2>/dev/null; then
+	mount -n -o move "$OMNI_LOWER" "$rootmnt$NEWROOT_LOWER" 2>/dev/null ||
+		mount -n --move "$OMNI_LOWER" "$rootmnt$NEWROOT_LOWER" 2>/dev/null ||
+		omni_log "WARNING: could not move the lower to $NEWROOT_LOWER (harmless, diagnostics only)"
+	mount -n -o move "$OMNI_UPPER" "$rootmnt$NEWROOT_UPPER" 2>/dev/null ||
+		mount -n --move "$OMNI_UPPER" "$rootmnt$NEWROOT_UPPER" 2>/dev/null ||
+		omni_log "WARNING: could not move the upper to $NEWROOT_UPPER (harmless, diagnostics only)"
+else
+	omni_log "WARNING: could not create $NEWROOT_LOWER / $NEWROOT_UPPER in the merged root"
+fi
+
+# ---------------------------------------------------------------------------
+# Publish what we decided.  /run is a tmpfs that init moves to ${rootmnt}/run
+# just before run-init, so this survives into userspace and is the authoritative
+# answer to "which slot am I actually running from?" -- more trustworthy than
+# re-parsing /proc/cmdline, and the only sane source once / is an overlay
+# (findmnt -no SOURCE / just says "overlay").
+# Consumed by /usr/lib/omni/omni-commit and /usr/lib/omni/omni-deadman.
+# ---------------------------------------------------------------------------
+if mkdir -p /run/omni 2>/dev/null; then
+	{
+		echo "# generated by /etc/initramfs-tools/scripts/local-bottom/omni-overlay"
+		echo "OMNI_ROOT_DEV=$ROOTFS_DEV"
+		echo "OMNI_ROOT_PART=$ROOT_PART_NO"
+		echo "OMNI_UPPER_DEV=$OVERLAY_DEV"
+		echo "OMNI_UPPER_PART=$OVERLAY_PART_NO"
+		echo "OMNI_OVERLAY=1"
+		echo "OMNI_RECOVERY=$OMNI_RECOVERY"
+		echo "OMNI_LOWER_MNT=$NEWROOT_LOWER"
+		echo "OMNI_UPPER_MNT=$NEWROOT_UPPER"
+	} >/run/omni/slot.env 2>/dev/null ||
+		omni_log "WARNING: could not write /run/omni/slot.env"
+fi
+
+exit 0

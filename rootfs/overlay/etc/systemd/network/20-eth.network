@@ -1,0 +1,126 @@
+# /etc/systemd/network/20-eth.network -- Avast Omni wired NIC.
+#
+# ###########################################################################
+# ## THE INTERFACE IS end0, NOT eth0.                                       ##
+# ##                                                                        ##
+# ## The DTS must keep `aliases { ethernet0 = &ethmac; }` for U-Boot's       ##
+# ## fdt_fixup_ethernet() to inject ethaddr.  systemd-udevd reads that same  ##
+# ## alias for device-tree-based naming (naming scheme v251+), so on         ##
+# ## systemd 257 (trixie) the stmmac NIC enumerates as `end0`.  Kirkstone    ##
+# ## shipped systemd 250, which is why it is `eth0` today.                   ##
+# ###########################################################################
+#
+# TWO WAYS TO HANDLE IT.  WE MATCH THE NAME; WE DO NOT RENAME.  Why:
+#
+#   * A .link with NamePolicy=/Name=eth0 only works if systemd-udevd runs, if
+#     the .link is actually matched, and if the rename does not race.  Each of
+#     those is a way to end up with an unconfigured interface on a headless box
+#     -- and an unconfigured interface here means no SSH, which (with no
+#     bootdelay and a closet) means a truck roll.  Matching `e*` cannot fail
+#     that way: whatever udev decides to call it, this file still applies.
+#
+#   * systemd explicitly warns against renaming into the KERNEL's namespace.
+#     "eth0" is a kernel-assigned name; if the kernel also assigns eth0 to some
+#     other device (a USB NIC in Phase 5) the rename collides and udev gives up,
+#     leaving BOTH interfaces unconfigured.
+#
+#   * Renaming buys nothing real.  Nothing in the new image depends on the
+#     literal string eth0: this file matches a glob, the firewall is written
+#     against this file, and the old `10-enable_rps.conf` tmpfiles rule (which
+#     hardcoded .../net/eth0/queues/rx-0/rps_cpus) is not carried forward -- a
+#     single-queue gigabit NIC on a 4-core A113D does not need RPS steering
+#     badly enough to justify a path that breaks on rename.
+#
+#   * It survives a systemd naming-scheme change in a future Debian release,
+#     which a NamePolicy pinned to today's scheme does not.
+#
+# Consequence to remember: anything you write later that says "eth0" must be
+# checked.  Assert the actual name on the serial console during Phase 4/8.
+#
+# ###########################################################################
+# ## THIS FILE LIVES IN THE IMAGE AND MUST STAY THERE.                      ##
+# ##                                                                        ##
+# ## The Yocto firmware symlinks /etc/systemd/network/00-eth0.network to    ##
+# ## /data/etc/systemd/network/00-eth0.network                              ##
+# ## (repo/meta-apollo/recipes-core/systemd-apollo/systemd_%.bbappend:30).   ##
+# ## Do NOT reproduce that.  /data is a single shared partition that is not  ##
+# ## A/B protected: a bad file there survives a rollback, and an unmounted   ##
+# ## or corrupt /data leaves the interface with no configuration at all.     ##
+# ## The bootable minimum -- an address and a running sshd -- lives in the   ##
+# ## image, per rootfs slot, and rolls back with it.                         ##
+# ###########################################################################
+
+[Match]
+# Matches end0 (DT alias naming), eth0 (kernel naming), enp*/enx* (PCI/USB).
+# Type=ether keeps veth/bridge/tun out; their names do not start with 'e'
+# anyway, but being explicit costs nothing.
+Name=e*
+Type=ether
+
+[Link]
+# Make network-online.target mean something for anything that does use it.
+RequiredForOnline=routable
+# 1500 unless the DHCP server says otherwise; stmmac on meson-axg does not do
+# jumbo frames reliably and this is a WAN-facing port.
+MTUBytes=1500
+
+[Network]
+DHCP=ipv4
+IPv6AcceptRA=yes
+
+# --- Fallbacks, in decreasing order of "how badly did DHCP fail" ------------
+#
+# LinkLocalAddressing=yes, deliberately NOT "ipv4":
+#
+#   * "yes" gives BOTH an IPv6 link-local address (always present) and an IPv4
+#     link-local address (RFC 3927, 169.254.0.0/16) -- and networkd only brings
+#     the IPv4 one up after DHCPv4 has been unsuccessful for a while, so it
+#     costs nothing on a healthy LAN.
+#   * "ipv4" would SUPPRESS the IPv6 link-local address.  That address is the
+#     most reliable non-serial recovery path there is: from a directly attached
+#     machine, `ssh root@fe80::<eui64>%<iface>` works when IPv4 is completely
+#     dead, with no DHCP server and no agreement about addressing at all.
+#     Do not "simplify" this to ipv4.
+LinkLocalAddressing=yes
+
+# No name-service chatter on a WAN-facing port.
+LLMNR=no
+MulticastDNS=no
+
+# 3. A deterministic rescue address, always configured in addition to DHCP.
+#    Plug a laptop into the port, give it 192.168.77.1/24, ssh to 192.168.77.77.
+#    Chosen to be unlikely to collide with a customer LAN; if it does collide in
+#    your deployment, change it here -- but do not simply delete it without
+#    replacing it with something equally deterministic.
+Address=192.168.77.77/24
+
+# Do not let a DHCP-supplied domain/DNS silently take over resolution decisions
+# that a router should be making for itself.
+IPv6PrivacyExtensions=no
+
+# [DHCPv4], not the legacy [DHCP]: systemd split the section in v248 and the
+# combined [DHCP] name is deprecated (still parsed, no longer documented as of
+# systemd 255/257).  Naming it correctly avoids a per-boot warning and avoids
+# silently losing these settings in a future release.
+[DHCPv4]
+# ClientIdentifier=mac, NOT the default duid.
+#
+# systemd-networkd derives its DHCP DUID from /etc/machine-id.  Per the
+# migration plan, /etc/machine-id is an initramfs seed only -- systemd PID1
+# overmounts it before any unit runs -- and it is per-slot state that changes on
+# an A/B flip.  A DUID that changes means a NEW DHCP lease and a NEW address
+# every time the slot flips, which is exactly the wrong behaviour for the box
+# you are trying to reach after a rollback.  The MAC comes from U-Boot's
+# ethaddr via fdt_fixup_ethernet() and is stable across everything.
+ClientIdentifier=mac
+
+# The Yocto config sets UseNTP=false; keep that -- timesyncd talks to fixed
+# servers and a DHCP-supplied NTP server is an unnecessary trust dependency.
+UseNTP=false
+UseDomains=yes
+UseMTU=false
+RouteMetric=100
+
+# Ask for a lease quickly and do not give up; a headless box has nobody to
+# retry for it.
+SendHostname=yes

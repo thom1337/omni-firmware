@@ -1,0 +1,55 @@
+#!/bin/sh
+# omni-recovery-disarm - clear the flag that sent us here, so recovery is a
+# visit and not a destination.
+#
+# THE FAILURE THIS PREVENTS. U-Boot enters p7 from three places
+# (0044-recovery-apollo-Add-support-for-recovery-reset.patch):
+#
+#   reset button                       -> bootargs "factory_reset"
+#   watchdog latch 0xff80023c==0xd000  -> bootargs "hard_recovery"
+#   force_hard_recovery=1              -> bootargs "hard_recovery"
+#
+# The first two are edge-triggered by hardware and clear themselves. The third
+# is a STORED environment variable: nothing in U-Boot ever unsets it. Set it,
+# and every subsequent boot lands here forever -- including after a successful
+# repair -- and the only way out is the serial "=>" prompt. Since setting it is
+# also the only way to reach recovery without physical access, it is exactly
+# the mechanism someone will use remotely, and exactly the one that strands
+# them. So clearing it is the first thing this slot does.
+#
+# Deliberately NOT conditional on the cmdline marker: if force_hard_recovery is
+# set, it gets cleared, whatever brought us here. A reset-button boot that
+# happens to find a stale flag should also clear it.
+set -eu
+
+LIB=/usr/lib/omni/omni-uboot-env.sh
+[ -r "$LIB" ] || { printf 'omni-recovery-disarm: %s missing\n' "$LIB" >&2; exit 0; }
+# shellcheck source=/dev/null
+. "$LIB"
+
+log() { printf 'omni-recovery-disarm: %s\n' "$*"; }
+
+why=$(sed -n 's/.*\(factory_reset\|hard_recovery\).*/\1/p' /proc/cmdline 2>/dev/null | head -1)
+log "recovery slot is up (reason: ${why:-unknown})"
+
+omni_env_check_tools  || { log "fw_printenv/fw_setenv unavailable - CANNOT disarm"; exit 0; }
+omni_env_check_config || { log "U-Boot env location unusable - CANNOT disarm"; exit 0; }
+
+cur=$(omni_env_get force_hard_recovery 2>/dev/null || printf '')
+if [ -z "$cur" ] || [ "$cur" = "0" ]; then
+    log "force_hard_recovery is already ${cur:-<undefined>} - nothing to clear"
+    exit 0
+fi
+
+log "force_hard_recovery=$cur - clearing it so the next boot returns to the A/B slots"
+trap 'omni_env_cleanup' EXIT INT TERM HUP
+omni_env_unlock || { log "cannot make the environment writable - NOT disarmed"; exit 0; }
+omni_env_set force_hard_recovery 0 || { log "fw_setenv failed - NOT disarmed"; exit 0; }
+omni_env_lock
+
+now=$(omni_env_get force_hard_recovery 2>/dev/null || printf '')
+if [ "$now" = "0" ]; then
+    log "verified: force_hard_recovery=0. Reboot returns to mender_boot_part."
+else
+    log "READ-BACK FAILED: force_hard_recovery=${now:-<undefined>} - still armed for recovery"
+fi

@@ -1,0 +1,143 @@
+#!/bin/sh
+# 00-omni-banner - login banner for serial and SSH.
+#
+# Lives in /etc/update-motd.d because pam_motd runs those scripts for BOTH the
+# serial console (agetty -> login -> PAM) and sshd (Debian's /etc/pam.d/sshd
+# includes pam_motd). That is also why sshd_config sets PrintMotd no -- PAM
+# already printed it, and turning it on would print it twice.
+#
+# This replaces the dynamic banner the Yocto image had (Machine / Distro /
+# Version / Build Date), which was lost in the move to Debian.
+#
+# THE POINT IS THE SLOT LINE. On an A/B device the single most important thing
+# to know when you land on a shell is which slot you are on and whether it is
+# ARMED -- an armed, uncommitted slot rolls back on the next reboot, and finding
+# that out by being surprised is how you lose an afternoon. It is coloured
+# accordingly: green committed, amber armed, red for a state that needs action.
+#
+# Runs on EVERY login on a 512 MB box, so it stays cheap: no subshell loops, no
+# du, nothing that touches the network. fw_printenv reads an 8 KB block.
+set -u
+
+# Colour only when the terminal can take it. `motd` output is captured to a file
+# in some paths, and escape codes in a logfile are noise.
+if [ -t 1 ] && [ "${TERM:-dumb}" != "dumb" ]; then
+    C_RST=$(printf '\033[0m');   C_DIM=$(printf '\033[2m')
+    C_CYN=$(printf '\033[1;36m'); C_GRN=$(printf '\033[1;32m')
+    C_YEL=$(printf '\033[1;33m'); C_RED=$(printf '\033[1;31m')
+    C_WHT=$(printf '\033[1;37m')
+else
+    C_RST=''; C_DIM=''; C_CYN=''; C_GRN=''; C_YEL=''; C_RED=''; C_WHT=''
+fi
+
+printf '%s' "$C_CYN"
+cat <<'ART'
+   ▄▄▄▄▄   ▄▄   ▄▄ ▄▄   ▄▄ ▄▄
+  ██   ██ ████ ████ ███  ██ ██     a v a s t
+  ██   ██ ██ ███ ██ ████ ██ ██
+  ██   ██ ██  █  ██ ██ ████ ██     O M N I
+   ▀▀▀▀▀  ▀▀     ▀▀ ▀▀  ▀▀▀ ▀▀
+ART
+printf '%s' "$C_RST"
+
+# --- the A/B slot, which is the reason this banner exists -------------------
+slot_line() {
+    command -v fw_printenv >/dev/null 2>&1 || {
+        printf '%sunknown%s (no fw_printenv)' "$C_RED" "$C_RST"; return; }
+
+    ptr=$(fw_printenv -n mender_boot_part 2>/dev/null || echo '?')
+    armed=$(fw_printenv -n upgrade_available 2>/dev/null || echo '?')
+    count=$(fw_printenv -n bootcount 2>/dev/null || echo '?')
+
+    # Where we are ACTUALLY running, which can differ from the pointer if the
+    # slot was booted by hand from the "=>" prompt.
+    run=$(sed -n 's/.*root=\/dev\/mmcblk0p\([0-9]\).*/\1/p' /proc/cmdline 2>/dev/null)
+    [ -n "$run" ] || run='?'
+    case "$run" in 1) name='A' ;; 2) name='B' ;; *) name='?' ;; esac
+
+    out="$C_WHT$name (p$run)$C_RST"
+    [ "$ptr" != "$run" ] && out="$out  ${C_RED}pointer says p$ptr${C_RST}"
+    case "$armed" in
+    0) out="$out  ${C_GRN}committed${C_RST}" ;;
+    1) out="$out  ${C_YEL}ARMED, uncommitted${C_RST} ${C_DIM}(bootcount $count; reboot without omni-commit.sh rolls back)${C_RST}" ;;
+    *) out="$out  ${C_RED}upgrade_available=$armed${C_RST}" ;;
+    esac
+    printf '%s' "$out"
+}
+
+# --- cheap system facts -----------------------------------------------------
+mem=$(awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{printf "%dM used of %dM", (t-a)/1024, t/1024}' /proc/meminfo 2>/dev/null)
+upt=$(awk '{d=int($1/86400);h=int(($1%86400)/3600);m=int(($1%3600)/60);printf "%dd %02d:%02d", d,h,m}' /proc/uptime 2>/dev/null)
+load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null)
+
+rootuse=$(df -h / 2>/dev/null | awk 'NR==2{printf "%s of %s (overlay)", $3, $2}')
+datause_plain=$(df -h /data 2>/dev/null | awk 'NR==2{printf "%s of %s", $3, $2}')
+[ -n "$datause_plain" ] || datause_plain="not mounted"
+
+# The NIC is the only remote access; say plainly whether it is usable.
+nic=$(ls /sys/class/net 2>/dev/null | grep -vx lo | head -1)
+if [ -n "$nic" ]; then
+    car=$(cat "/sys/class/net/$nic/carrier" 2>/dev/null || echo 0)
+    ip=$(ip -4 -o addr show dev "$nic" 2>/dev/null | awk '{print $4}' | head -1)
+    if [ "$car" = 1 ]; then
+        netline="$C_GRN$nic up$C_RST ${ip:-no address}"
+    else
+        netline="$C_YEL$nic NO CARRIER$C_RST ${C_DIM}(no cable)${C_RST}"
+    fi
+else
+    netline="${C_RED}no interface${C_RST}"
+fi
+
+# eMMC wear: a worn card looks exactly like a driver bug, so surface it.
+emmc=""
+for d in /sys/class/mmc_host/mmc0/mmc0:*/; do
+    [ -r "$d/life_time" ] || continue
+    lt=$(cat "$d/life_time" 2>/dev/null | awk '{print $1}')
+    eol=$(cat "$d/pre_eol_info" 2>/dev/null)
+    case "$eol" in
+    0x01) eolt="${C_GRN}normal${C_RST}" ;;
+    0x02) eolt="${C_YEL}WARNING >80% consumed${C_RST}" ;;
+    0x03) eolt="${C_RED}URGENT${C_RST}" ;;
+    *)    eolt="$eol" ;;
+    esac
+    case "$lt" in
+    0x01) ltt='0-10% used' ;; 0x02) ltt='10-20% used' ;; 0x03) ltt='20-30% used' ;;
+    *)    ltt="life $lt" ;;
+    esac
+    emmc="$ltt, $eolt"
+    emmc_plain="$ltt, $(printf %s "$eolt" | sed 's/\x1b\[[0-9;]*m//g')"
+    break
+done
+
+ts=""
+if command -v tailscale >/dev/null 2>&1; then
+    tss=$(tailscale status --json 2>/dev/null | sed -n 's/.*"BackendState"[[:space:]]*:[[:space:]]*"\([A-Za-z]*\)".*/\1/p' | head -1)
+    tsip=$(tailscale ip -4 2>/dev/null | head -1)
+    case "$tss" in
+    Running) ts="$C_GRN${tsip:-running}$C_RST" ;;
+    "")      ts="${C_DIM}installed, not responding${C_RST}" ;;
+    *)       ts="$C_YEL$tss$C_RST" ;;
+    esac
+else
+    ts="${C_DIM}not installed${C_RST}"
+fi
+
+# Two layouts on purpose. Plain facts go in a padded two-column grid; anything
+# COLOURED gets its own full-width line, because printf's %-Ns counts the ANSI
+# escape bytes toward the field width and silently misaligns the grid.
+row() { printf "  %s%-9s%s %-24s %s%-7s%s %s\n" "$C_DIM" "$1" "$C_RST" "$2" "$C_DIM" "$3" "$C_RST" "$4"; }
+line() { printf "  %s%-9s%s %s\n" "$C_DIM" "$1" "$C_RST" "$2"; }
+
+printf '\n'
+# The slot goes first and alone: it is the one fact that changes what you should
+# do next, and an ARMED slot rolls back on the next reboot.
+line slot "$(slot_line)"
+printf '\n'
+row host   "$(hostname)"      kernel "$(uname -r)"
+row uptime "$upt"             load   "$load"
+row root   "$rootuse"         mem    "$mem"
+row data   "$datause_plain"   emmc   "${emmc_plain:-unknown}"
+printf '\n'
+line net  "$netline"
+line tail "$ts"
+printf '\n'

@@ -1,0 +1,70 @@
+#!/bin/sh
+# /etc/kernel/postinst.d/zz-omni-flatten
+#
+# Debian kernel hook contract (linux-image postinst / kernel-package):
+#     run-parts --verbose --exit-on-error --arg=<version> --arg=<image-path> \
+#               /etc/kernel/postinst.d
+# so:   $1 = kernel version string   (e.g. 6.12.20-meson64)
+#       $2 = path to the installed kernel image (absent in some packagings;
+#            we fall back to /boot/vmlinuz-$1)
+#
+# The "zz-" prefix matters.  run-parts executes in C-locale name order, so this
+# runs AFTER /etc/kernel/postinst.d/initramfs-tools has produced
+# /boot/initrd.img-$1 -- one dpkg transaction therefore leaves all three
+# U-Boot-visible names consistent.
+#
+# What it does: copies (never symlinks) the real vmlinuz / DTB / initrd onto the
+# three fixed names U-Boot loads out of /boot inside this rootfs slot.
+# See /etc/default/omni-boot and /usr/lib/omni/omni-flatten.
+#
+# Must be mode 0755.
+
+set -eu
+
+usage() {
+	cat <<'EOF'
+Usage: zz-omni-flatten <kernel-version> [kernel-image-path]
+
+Debian /etc/kernel/postinst.d hook for the Avast Omni.  Copies the freshly
+installed kernel, its DTB and its initramfs onto the fixed names that U-Boot
+loads from /boot (see /etc/default/omni-boot).
+
+Environment:
+  OMNI_FLATTEN_DRY_RUN=1   change nothing, just report what would be copied
+
+Inspect without installing:
+  /usr/lib/omni/omni-flatten show <kernel-version>
+EOF
+}
+
+case "${1:-}" in
+-h|--help)
+	usage
+	exit 0
+	;;
+esac
+
+if [ $# -lt 1 ] || [ -z "${1:-}" ]; then
+	echo "zz-omni-flatten: ERROR: no kernel version passed as \$1." >&2
+	echo "zz-omni-flatten: the kernel package did not honour the hook contract." >&2
+	usage >&2
+	exit 1
+fi
+
+version=$1
+image=${2:-}
+
+FLATTEN=/usr/lib/omni/omni-flatten
+if [ ! -x "$FLATTEN" ]; then
+	echo "zz-omni-flatten: ERROR: $FLATTEN is missing or not executable." >&2
+	echo "zz-omni-flatten: refusing to leave /boot half-updated." >&2
+	exit 1
+fi
+
+set -- "$version"
+[ -n "$image" ] && set -- "$@" "$image"
+if [ "${OMNI_FLATTEN_DRY_RUN:-0}" = 1 ]; then
+	set -- --dry-run "$@"
+fi
+
+exec "$FLATTEN" kernel "$@"

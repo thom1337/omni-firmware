@@ -1,0 +1,19 @@
+# /etc/hosts -- Avast Omni.
+#
+# Shipped explicitly because mmdebstrap otherwise inherits the BUILD HOST's
+# /etc/hostname and /etc/hosts. The first built image booted announcing itself
+# as "old-laptop" -- the machine that built it -- which is wrong on a fleet
+# device, leaks the builder's machine name, and would have registered that name
+# on the tailnet via omni-tailscale-auth's --hostname "$(hostname)".
+#
+# 127.0.1.1 (not .0.1) for the hostname is the Debian convention: it keeps
+# `hostname -f` resolvable on a box with no DNS entry, without claiming the
+# loopback name.
+127.0.0.1	localhost
+127.0.1.1	omni
+
+::1		localhost ip6-localhost ip6-loopback
+fe00::0		ip6-localnet
+ff00::0		ip6-mcastprefix
+ff02::1		ip6-allnodes
+ff02::2		ip6-allrouters

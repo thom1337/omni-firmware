@@ -1,0 +1,203 @@
+# packages.list — explicit package set for the Avast Omni Debian trixie slot image.
+#
+# Consumed by build-rootfs.sh and passed to mmdebstrap as --include=<comma list>.
+# Syntax: one package per line. '#' starts a comment. Blank lines ignored.
+# Recommends are OFF by default (build-rootfs.sh passes Apt::Install-Recommends "false"),
+# so anything the image needs must be listed here or be a hard Depends of something listed.
+#
+# Base is mmdebstrap --variant=important, i.e. Essential:yes + Priority:important.
+# That already gives: systemd, udev, coreutils, util-linux, procps, mount, dpkg, apt,
+# bash, gzip, tar, sed, grep, findutils, login, passwd, hostname, netbase, ifupdown? (no,
+# ifupdown is Priority:important on Debian but is explicitly excluded below — see NOT-INSTALLED).
+#
+# Size budget matters: a slot is 850 MiB (891,289,600 bytes, measured -- see
+# docs/HARDWARE-MEASURED.md). Adding a package here costs space in BOTH slots.
+
+# ---------------------------------------------------------------------------
+# init / PID 1
+# ---------------------------------------------------------------------------
+# systemd-sysv provides /sbin/init, reboot, poweroff, shutdown. Without it the
+# kernel has no init to exec after switch_root.
+systemd-sysv
+# udev: DT-based interface naming (the end0-vs-eth0 problem in the plan), devtmpfs rules.
+udev
+# D-Bus: systemctl/networkctl/resolvectl over the bus.
+dbus
+
+# ---------------------------------------------------------------------------
+# Boot chain: initramfs + the U-Boot env tools
+# ---------------------------------------------------------------------------
+# initramfs-tools builds /boot/initrd.img-<ver>, which /etc/initramfs/post-update.d/99-omni-flatten
+# copies onto ${mender_ramdisk_name}. The overlay-root init lives in
+# /etc/initramfs-tools/scripts/local-bottom/omni-overlay.
+initramfs-tools
+# busybox is the shell you land in when the overlay init calls panic(). On a headless
+# box in a closet this is the difference between "debuggable over serial" and "brick".
+busybox
+# linux-base provides linux-update-symlinks, which Armbian's linux-image postinst calls.
+# apt would pull it as a dependency anyway; listed so a missing dep is a loud failure here
+# rather than a surprise in the kernel deb's postinst.
+linux-base
+# fw_printenv / fw_setenv. ESSENTIAL: omni-arm / omni-commit / omni-rollback are pure
+# fw_setenv scripts, and without these binaries a Debian slot cannot arm, commit or roll
+# back — i.e. it cannot participate in A/B at all. build-rootfs.sh asserts at build time
+# that both binaries exist in the finished image.
+#
+# It is libubootenv-tool, NOT u-boot-tools. VERIFIED against packages.debian.org for
+# trixie/arm64: trixie's u-boot-tools ships only dumpimage, kwboot, mkeficapsule,
+# mkenvimage, mkimage and mksunxiboot — fw_printenv/fw_setenv were split out, and
+# libubootenv-tool is now their only provider in the archive.
+#
+# SYNTAX HAZARD (already handled in the overlay, recorded here so it stays handled):
+# U-Boot 2018.09's own fw_setenv parses a `-s <file>` script as "name<space>value";
+# libubootenv parses "key=value". They are not interchangeable, and a mis-parsed batch write
+# lands in the single non-redundant 8 KB environment copy. /usr/lib/omni/omni-uboot-env.sh
+# therefore never uses `fw_setenv -s` at all — it writes one variable per invocation, which
+# is unambiguous under both implementations. Do not "optimise" that into a batched write.
+libubootenv-tool
+
+# ---------------------------------------------------------------------------
+# Networking — systemd-networkd/resolved only, no ifupdown, no DHCP client package
+# ---------------------------------------------------------------------------
+# In trixie systemd-resolved and systemd-timesyncd are split out of the systemd binary
+# package and must be requested explicitly. systemd-networkd itself is inside `systemd`.
+systemd-resolved
+systemd-timesyncd
+# NOTE: ifupdown is Priority:important, so --variant=important installs it. It is NOT
+# deselected here with "ifupdown-": mmdebstrap marks the whole important set held, and
+# apt then refuses with "Held packages were changed". It is purged in the 60-finalise
+# hook instead, which is also where the forbidden-package assertion runs.
+# ip / tc / bridge. tc matters because the Yocto kernel-config patch 0009 stripped the
+# packet schedulers and the plan puts them back.
+iproute2
+# The firewall engine. On trixie `iptables` is the nft backend (iptables-nft), so anything
+# that still emits iptables syntax and our native nft rules share one engine — that is the
+# point of the nftables migration. iptables is kept for that compatibility surface even
+# though nothing in the image requires it today.
+nftables
+iptables
+# WireGuard userland; the module comes from Armbian's stock meson64 config (WIREGUARD=m).
+wireguard-tools
+# ping / arping. Debian ships these with file capabilities; note the build drops file caps
+# when packing via the unshare method (see build-rootfs.sh --pack-method), which only
+# affects non-root users, and this box is root-only.
+iputils-ping
+# Root CA bundle for curl/apt/wireguard endpoints.
+ca-certificates
+# curl is not optional: the streaming fallback in the flash path is
+# `curl -fL "$URL" | gzip -dc | dd of=...`, so the *running* slot needs curl to write the
+# other slot.
+curl
+
+# ---------------------------------------------------------------------------
+# Remote access
+# ---------------------------------------------------------------------------
+# Host keys are deliberately removed from the image at build time; the overlay's sshd_config
+# points HostKey at /data/ssh/... so identity survives an A/B flip and is not shared between
+# devices. Harden SSH — but never the serial console (see the autologin drop-in).
+openssh-server
+# scp/ssh outbound, used by the commit-guard's positive-evidence check and for pulling
+# images onto the box by hand.
+openssh-client
+
+# ---------------------------------------------------------------------------
+# Storage / filesystem — the A/B flash path runs on the device
+# ---------------------------------------------------------------------------
+# mke2fs (guarded mkfs.ext4 -F of the stale overlay upper), e2fsck (post-write verify of the
+# inactive slot), dumpe2fs (Phase 0 inventory). The Yocto image shipped only
+# e2fsprogs-mke2fs, which is why Phase 0 has to sideload e2fsck/dumpe2fs today.
+e2fsprogs
+# sfdisk for `sfdisk -d /dev/mmcblk0` partition-table dumps.
+fdisk
+# blockdev --getsize64 / --flushbufs and lsblk are in util-linux (already Essential);
+# listed for intent, costs nothing.
+util-linux
+# mmc-utils reads EXT_CSD directly: pre_eol_info and life_time_est. A worn eMMC looks
+# exactly like a DTS bug, so this needs to be answerable on the device.
+mmc-utils
+
+# ---------------------------------------------------------------------------
+# Containers -- DELIBERATELY NONE
+# ---------------------------------------------------------------------------
+# There is no docker.io, no containerd and no runc in this image, and that is a
+# decision made against the device rather than a preference.
+#
+# Measured on the unit 2026-08-02 (docs/HARDWARE-MEASURED.md):
+#
+#   * docker.service is INACTIVE and the image database holds ZERO images.
+#     /var/lib/docker contains only the empty skeleton dockerd creates on its
+#     first start. Nothing has ever been run.
+#   * Docker cannot use the overlay2 storage driver here at all. Its data would
+#     sit on the root overlayfs, and overlayfs cannot be stacked as the upperdir
+#     of another overlayfs. The kernel says so out loud on every start attempt:
+#         overlayfs: filesystem on '/var/lib/docker/check-overlayfs-support*/upper'
+#         not supported as upperdir
+#     The only fallback is the vfs driver, which stores every layer as a full
+#     physical copy with no sharing -- on a 4 GB eMMC.
+#   * /data (p3), the one partition that is not per-slot and therefore the only
+#     sane data-root, is 150 MiB total with 130 MiB free. That does not hold one
+#     image, never mind a set.
+#
+# So the packages were installed, never used, and could not have worked well if
+# they had been. Dropping them removes ~400 MB of image, deletes the /data
+# capacity problem outright, and simplifies the cgroup v2 migration (which is
+# still required, but by systemd >= 256, not by Docker's cgroup driver).
+#
+# TO PUT IT BACK you need three things, in this order, and the first is not
+# optional: capacity, then a storage driver, then the packages.
+#   1. Repartition. p5/p6 are 650 MiB each and hold 2.0 MB of actual data; that
+#      is where the space is. This rewrites the partition table on a device whose
+#      p7 holds a factory image this repo cannot rebuild, so it belongs behind a
+#      full backup.
+#   2. Give Docker a data-root on a REAL filesystem, not on the overlay -- e.g.
+#      /data on the enlarged p3 -- so overlay2 works.
+#   3. Add `docker.io` back here plus /etc/docker/daemon.json with
+#      { "data-root": ..., "exec-opts": ["native.cgroupdriver=systemd"] }
+#      and containerd's root= pointed alongside it. Both files are in git history.
+
+# ---------------------------------------------------------------------------
+# Phase 4 gate + on-device debugging
+# ---------------------------------------------------------------------------
+# ethtool: link speed/duplex assertion and `ethtool -S` rx CRC/length error counters —
+# the per-direction RGMII delay check depends on it.
+ethtool
+# iperf3: the 30-minute bidirectional throughput comparison, 5.4 vs 6.12, each direction
+# recorded separately.
+iperf3
+# fio: the 2 h `--direct=1 --verify=crc32c --verify_fatal=1` eMMC verification run.
+fio
+# tcpdump: packet-level truth when the NIC "mostly works". Small; keep it.
+tcpdump
+# less/jq: reading long serial output without a pager is miserable, and the arm/commit
+# scripts parse JSON status.
+less
+jq
+
+# Interactive comfort on a box whose normal front door is a 115200 baud serial
+# console. Both are worth their bytes there: btop reads a 512 MB appliance at a
+# glance, and vim means editing a unit file over serial does not mean nano or
+# `cat > file`. Measured cost at the time of adding: ~45 MB of the 184 MB the
+# 850 MiB slot had free. If a future addition stops fitting, that headroom --
+# not these two -- is the thing to reconsider; see rootfs/build-rootfs.sh
+# BLOCKS, which is pinned to p1's real block count and must NOT be grown.
+btop
+vim
+
+# ---------------------------------------------------------------------------
+# DELIBERATELY NOT INSTALLED — build-rootfs.sh asserts these are absent
+# ---------------------------------------------------------------------------
+#   flash-kernel      Recommended by Debian's arm64 linux-image. It writes to the boot
+#                     device on kernel install. This device's kernel is loaded from inside
+#                     the rootfs slot by Mender bootcmd; flash-kernel would be actively
+#                     destructive.
+#   u-boot-menu       Same class of problem: rewrites boot configuration.
+#   armbian-bsp-cli   Pulls armbian-install, which REPARTITIONS eMMC and rewrites
+#   armbian-config    bootloaders. This is the single reason the image is built with
+#   armbian-firmware  mmdebstrap instead of Armbian's image pipeline.
+#   ifupdown          Replaced by systemd-networkd; having both is a split-brain network.
+#   isc-dhcp-client   networkd has its own DHCP client.
+#   network-manager   Ditto, and it fights networkd over the same link.
+#   resolvconf        systemd-resolved owns /etc/resolv.conf.
+#   openresolv
+#   rsyslog           journald with Storage=volatile (set in the overlay) is enough; a
+#                     disk-backed syslog writes into the per-slot overlay upper forever.

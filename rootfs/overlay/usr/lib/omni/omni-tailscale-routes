@@ -1,0 +1,93 @@
+#!/bin/sh
+# omni-tailscale-routes - advertise this box as a subnet router and exit node.
+#
+# WHY THIS IS DERIVED AND NOT CONFIGURED. The obvious version of this feature
+# ships --advertise-routes=192.168.86.0/24 in the image. That is wrong the
+# moment an Omni is plugged into any other network: it would advertise a prefix
+# it is not on, the control plane would approve it, and the tailnet would route
+# that subnet to a box that drops every packet. Silently. So the prefix comes
+# from the kernel's own connected route for the interface that carries the
+# default route -- if the box moves to another LAN, the advertisement follows.
+#
+# The exit-node offer is unconditional and safe: it is only an OFFER. Nothing
+# uses it until it is approved in the admin console AND a client selects it.
+#
+# THE 192.168.77.0/24 EXCLUSION IS LOAD-BEARING. 20-eth.network gives every
+# Omni a static 192.168.77.77/24 as a rescue address, so you can plug a laptop
+# straight into the port when DHCP has failed. That prefix is on every Omni
+# ever built. Advertising it would have every box on the tailnet claiming the
+# same private /24, and whichever won the primary election would black-hole the
+# others' rescue path.
+#
+# Runs at every boot and is idempotent: `tailscale set` is a no-op when the
+# prefs already match. To stop it reasserting over a manual change, set
+# OMNI_TS_ADVERTISE=off in /etc/default/omni-tailscale.
+set -eu
+
+CONF=/etc/default/omni-tailscale
+# auto = derive from the default-route interface. off = do nothing. Anything
+# else is taken as an explicit comma-separated prefix list.
+OMNI_TS_ADVERTISE=auto
+OMNI_TS_EXIT_NODE=yes
+# shellcheck source=/dev/null
+[ -r "$CONF" ] && . "$CONF"
+
+log() { printf 'omni-tailscale-routes: %s\n' "$*"; }
+
+command -v tailscale >/dev/null 2>&1 || { log "tailscale not installed"; exit 0; }
+
+if [ "$OMNI_TS_ADVERTISE" = off ]; then
+    log "OMNI_TS_ADVERTISE=off - leaving advertisements alone"
+    exit 0
+fi
+
+# Only touch prefs once the node is actually on a tailnet. Before enrolment
+# there is nothing to advertise to, and `tailscale set` would just fail.
+state=$(tailscale status --json 2>/dev/null | sed -n 's/.*"BackendState"[[:space:]]*:[[:space:]]*"\([A-Za-z]*\)".*/\1/p' | head -1)
+if [ "$state" != Running ]; then
+    log "tailscale BackendState=${state:-unknown}, not Running - nothing to do yet"
+    exit 0
+fi
+
+routes=""
+if [ "$OMNI_TS_ADVERTISE" = auto ]; then
+    # The interface that carries the default route. On a single-NIC appliance
+    # this is end0, but it is derived rather than named: the kernel called it
+    # eth0 before predictable naming and could again.
+    iface=$(ip -4 route show default 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+    if [ -z "$iface" ]; then
+        log "no default route yet - not advertising a subnet"
+    else
+        # The kernel's own connected prefixes for that interface. Reading these
+        # rather than computing a mask from the address means no arithmetic to
+        # get wrong, and it picks up a /22 or /16 LAN correctly.
+        for p in $(ip -4 route show dev "$iface" proto kernel scope link 2>/dev/null | awk '{print $1}'); do
+            case "$p" in
+            192.168.77.0/24) log "skipping $p (the rescue address every Omni carries)"; continue ;;
+            169.254.*)       continue ;;
+            esac
+            routes="${routes}${routes:+,}${p}"
+        done
+        [ -n "$routes" ] && log "derived LAN prefix(es) from ${iface}: ${routes}"
+    fi
+else
+    routes="$OMNI_TS_ADVERTISE"
+    log "using configured prefix(es): ${routes}"
+fi
+
+set --
+[ -n "$routes" ] && set -- --advertise-routes="$routes"
+[ "$OMNI_TS_EXIT_NODE" = yes ] && set -- "$@" --advertise-exit-node
+
+if [ $# -eq 0 ]; then
+    log "nothing to advertise"
+    exit 0
+fi
+
+if tailscale set "$@"; then
+    log "advertised: $*"
+    log "NOTE: routes and exit-node use stay INACTIVE until approved in the"
+    log "      admin console - the device cannot approve itself."
+else
+    log "WARNING: tailscale set failed; advertisements unchanged"
+fi

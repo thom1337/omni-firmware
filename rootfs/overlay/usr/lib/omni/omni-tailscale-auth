@@ -1,0 +1,64 @@
+#!/bin/sh
+# omni-tailscale-auth - bring the node onto the tailnet, if a key was provided.
+#
+# NO AUTH KEY IS BAKED INTO THE IMAGE, and none is in git. A pre-auth key is a
+# credential: an image carrying one can enrol anything it is ever written to,
+# and this image is meant to be reproducible and shareable. So the key is
+# device-local state, read from /data (p3), which is shared by both A/B slots
+# and never shipped.
+#
+# To enrol a device, over serial, once:
+#
+#     mkdir -p /data/tailscale
+#     printf '%s\n' 'tskey-auth-...' > /data/tailscale/authkey
+#     chmod 0600 /data/tailscale/authkey
+#     systemctl start omni-tailscale-auth
+#
+# or just run `tailscale up` by hand -- this unit exists so that a REPLACEMENT
+# unit for the same site can enrol itself unattended from a key dropped on
+# /data, without anyone having to remember the incantation.
+#
+# The key is consumed and deleted on success. Tailscale's own state then lives
+# in /data/tailscale/tailscaled.state (see the tailscaled drop-in), so this runs
+# exactly once per device rather than once per boot.
+set -eu
+
+KEYFILE=/data/tailscale/authkey
+STATE=/data/tailscale/tailscaled.state
+TAGS="${OMNI_TS_TAGS:-}"
+
+log() { printf 'omni-tailscale-auth: %s\n' "$*"; }
+
+command -v tailscale >/dev/null 2>&1 || { log "tailscale not installed; nothing to do"; exit 0; }
+
+# Already on the tailnet? Then this is a normal boot, not a first boot.
+if tailscale status --json 2>/dev/null | grep -q '"BackendState"[[:space:]]*:[[:space:]]*"Running"'; then
+    log "already Running; leaving it alone"
+    exit 0
+fi
+
+if [ ! -s "$KEYFILE" ]; then
+    if [ -s "$STATE" ]; then
+        log "no auth key, but state exists -- tailscaled will reconnect on its own"
+    else
+        log "no auth key at $KEYFILE and no state; node is NOT on a tailnet."
+        log "  enrol with:  tailscale up      (or drop a key at $KEYFILE and restart this unit)"
+    fi
+    exit 0
+fi
+
+log "auth key present; enrolling"
+set -- --auth-key "$(cat "$KEYFILE")" --hostname "$(hostname)"
+[ -n "$TAGS" ] && set -- "$@" --advertise-tags "$TAGS"
+
+# --accept-dns=false on purpose: systemd-resolved owns /etc/resolv.conf here and
+# the box is a router-ish appliance. Turn it on deliberately if you want MagicDNS.
+if tailscale up --accept-dns=false --timeout 90s "$@"; then
+    log "enrolled; removing the auth key"
+    rm -f "$KEYFILE"
+    sync
+else
+    log "ERROR: tailscale up failed. The key has been LEFT IN PLACE at $KEYFILE"
+    log "  so this can be retried; delete it by hand if it was a bad key."
+    exit 1
+fi

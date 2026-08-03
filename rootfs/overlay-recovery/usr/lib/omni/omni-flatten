@@ -1,0 +1,352 @@
+#!/bin/sh
+# omni-flatten -- put the three U-Boot-visible boot artefacts in /boot under the
+#                 exact fixed names the Mender/U-Boot environment loads.
+#
+# This is the shared implementation behind the two Debian hooks:
+#   /etc/kernel/postinst.d/zz-omni-flatten       (kernel + dtb + initrd)
+#   /etc/initramfs/post-update.d/99-omni-flatten (initrd only)
+#
+# It copies -- it NEVER symlinks.  U-Boot 2018.09's ext4 driver follows symlinks
+# inconsistently and a dangling link in the boot path is an unbootable slot, so
+# the three names are always real, whole files.  Cost is ~40 MB per rootfs slot.
+#
+# Copyright: part of the Avast Omni Armbian migration.  No warranty.
+
+set -eu
+
+PROG=omni-flatten
+DEFAULTS=/etc/default/omni-boot
+
+usage() {
+	cat <<'EOF'
+Usage: omni-flatten <command> [options]
+
+Commands:
+  kernel  <version> [image-path]   flatten vmlinuz + dtb (+ initrd if present)
+  initrd  <version> [initrd-path]  flatten the initramfs only
+  all     <version>                same as "kernel" with auto-discovery
+  show    [version]                print what would be copied where, exit 0
+  help                             this text
+
+Options (may appear anywhere):
+  -n, --dry-run    print the actions, change nothing
+  -v, --verbose    be chatty
+  -h, --help       this text
+
+Reads /etc/default/omni-boot for the three fixed U-Boot artefact names.
+Exit status: 0 on success (including "nothing to do"), non-zero on a real
+failure.  The Debian kernel hooks run under `run-parts --exit-on-error`, so a
+non-zero exit here aborts the dpkg run on purpose: a half-flattened /boot is
+an unbootable slot and must not pass silently.
+EOF
+}
+
+log()  { printf '%s: %s\n' "$PROG" "$*" >&2; }
+vlog() { [ "${VERBOSE:-0}" = 1 ] && log "$@" || :; }
+die()  { printf '%s: ERROR: %s\n' "$PROG" "$*" >&2; exit 1; }
+
+DRYRUN=0
+VERBOSE=0
+
+# ---------------------------------------------------------------------------
+# argument parsing (options may be interleaved with positionals)
+# ---------------------------------------------------------------------------
+CMD=""
+ARGS=""
+for a in "$@"; do
+	case "$a" in
+	-n|--dry-run) DRYRUN=1 ;;
+	-v|--verbose) VERBOSE=1 ;;
+	-h|--help|help) usage; exit 0 ;;
+	-*) die "unknown option '$a' (try --help)" ;;
+	*)
+		if [ -z "$CMD" ]; then
+			CMD="$a"
+		else
+			# positionals may contain spaces in theory; they do not in
+			# practice (dpkg passes versions and /boot paths).
+			ARGS="${ARGS}${ARGS:+ }$a"
+		fi
+		;;
+	esac
+done
+[ -n "$CMD" ] || { usage; exit 1; }
+
+# shellcheck disable=SC2086
+set -- $ARGS
+
+# ---------------------------------------------------------------------------
+# configuration
+# ---------------------------------------------------------------------------
+[ -r "$DEFAULTS" ] || die "$DEFAULTS is missing or unreadable -- cannot know the U-Boot artefact names"
+# shellcheck source=/dev/null disable=SC1091
+. "$DEFAULTS"
+
+: "${OMNI_BOOT_DIR:=/boot}"
+: "${OMNI_DTB_SRC:=amlogic/meson-axg-apollo.dtb}"
+
+for v in OMNI_KERNEL_NAME OMNI_DTB_NAME OMNI_INITRD_NAME; do
+	eval "val=\${$v:-}"
+	[ -n "$val" ] || die "$v is empty in $DEFAULTS -- refusing to guess"
+	case "$val" in
+	*/*) die "$v contains a '/' ($val); U-Boot loads /boot/<name>, not a path" ;;
+	esac
+done
+
+if [ "${OMNI_BOOT_VERIFIED:-no}" != "yes" ]; then
+	log "NOTE: $DEFAULTS is still marked OMNI_BOOT_VERIFIED=no."
+	log "NOTE: the artefact names below are COMPILED DEFAULTS, not device truth."
+	log "NOTE: Phase 0 check P4 must overwrite them from the device's fw_printenv."
+fi
+
+# ---------------------------------------------------------------------------
+# overlay warning: at RUNTIME / is an overlayfs whose upper is p5/p6.  U-Boot
+# reads /boot straight out of the LOWER ext4 slot (p1/p2) and never sees the
+# upper, so a kernel installed with apt on a running box does NOT become the
+# boot kernel.  Kernels ship inside the image; this is loud, not fatal, because
+# failing here would break every unrelated apt transaction.
+# ---------------------------------------------------------------------------
+warn_if_overlay_root() {
+	[ -r /proc/mounts ] || return 0
+	command -v awk >/dev/null 2>&1 || return 0
+	awk '$2 == "/" && $3 == "overlay" { found = 1 } END { exit !found }' /proc/mounts || return 0
+	log "############################################################"
+	log "# WARNING: / is an overlayfs (upper = /dev/mmcblk0p5|p6).   #"
+	log "# Files written to /boot land in the OVERLAY UPPER.         #"
+	log "# U-Boot reads /boot from the LOWER ext4 slot and will NOT  #"
+	log "# see them.  This kernel will NOT boot from here.           #"
+	log "# Build kernels into the image; do not apt-install them on  #"
+	log "# a running unit and expect a reboot to pick them up.       #"
+	log "############################################################"
+}
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# read_magic <file> <offset> <count> -> hex bytes, lowercase, no separators
+read_magic() {
+	have dd || return 1
+	have od || return 1
+	dd if="$1" bs=1 skip="$2" count="$3" status=none 2>/dev/null |
+		od -A n -t x1 -v 2>/dev/null | tr -d ' \n'
+}
+
+# Refuse to install something U-Boot's `booti` cannot start.
+#
+# U-Boot 2018.09 boots this with `booti`, which requires a RAW, UNCOMPRESSED
+# arm64 Image -- it does not decompress.  Armbian's arm64 linux-image installs
+# arch/arm64/boot/Image as /boot/vmlinuz-<ver>, so this normally passes; the
+# check exists because a packaging change to a compressed vmlinuz would produce
+# a slot that fails to boot with no other warning.
+check_arm64_image() {
+	f=$1
+	head=$(read_magic "$f" 0 4 2>/dev/null) || {
+		log "cannot verify the kernel image format (dd/od unavailable) -- skipping check"
+		return 0
+	}
+	case "$head" in
+	1f8b*) die "$f is gzip-compressed. U-Boot's booti needs a raw arm64 Image;
+  gunzip it (or fix the kernel package) before it can be a boot artefact." ;;
+	28b52ffd|fd2fb528) die "$f is zstd-compressed; U-Boot's booti needs a raw arm64 Image" ;;
+	04224d18) die "$f is lz4-compressed; U-Boot's booti needs a raw arm64 Image" ;;
+	esac
+
+	m=$(read_magic "$f" 56 4 2>/dev/null) || return 0
+	# arm64 Image header: u32 magic 0x644d5241 at offset 0x38, little endian,
+	# i.e. the bytes 'A' 'R' 'M' 0x64 -> 41 52 4d 64.
+	case "$m" in
+	41524d64) return 0 ;;
+	"")       log "could not read magic from $f -- skipping check"; return 0 ;;
+	*)        die "$f is not an arm64 Image (magic at 0x38 = '$m', expected 41524d64)" ;;
+	esac
+}
+
+check_fdt() {
+	f=$1
+	m=$(read_magic "$f" 0 4 2>/dev/null) || return 0
+	case "$m" in
+	d00dfeed) return 0 ;;
+	"")       return 0 ;;
+	*)        die "$f is not a flattened device tree (magic = '$m', expected d00dfeed)" ;;
+	esac
+}
+
+# install_artifact <src> <dst> <label>
+# Idempotent: identical content is left alone (no needless eMMC wear, and the
+# hook can be re-run any number of times).  Writes via a temp file in the same
+# directory and rename(2), so a power cut can never leave a truncated boot file
+# under a name U-Boot will try to load.
+install_artifact() {
+	src=$1 dst=$2 label=$3
+
+	[ -f "$src" ] || die "$label source '$src' does not exist"
+	[ -s "$src" ] || die "$label source '$src' is empty"
+
+	if [ "$src" = "$dst" ]; then
+		vlog "$label: source and destination are the same file ($src); nothing to do"
+		return 0
+	fi
+	if [ -L "$dst" ]; then
+		log "$label: '$dst' is a SYMLINK -- replacing it with a real file"
+	fi
+	if have cmp && [ -f "$dst" ] && [ ! -L "$dst" ] && cmp -s "$src" "$dst" 2>/dev/null; then
+		vlog "$label: '$dst' already identical to '$src'"
+		return 0
+	fi
+
+	if [ "$DRYRUN" = 1 ]; then
+		log "[dry-run] cp -f '$src' -> '$dst'"
+		return 0
+	fi
+
+	dstdir=$(dirname "$dst")
+	[ -d "$dstdir" ] || mkdir -p "$dstdir" || die "cannot create $dstdir"
+	tmp="$dstdir/.omni-flatten.$$.$(basename "$dst")"
+
+	# cp, not ln, not mv-from-elsewhere: the destination must be a real,
+	# complete file living on the rootfs slot U-Boot reads.
+	cp -f "$src" "$tmp" || { rm -f "$tmp"; die "$label: copy of '$src' failed"; }
+	chmod 0644 "$tmp" || :
+	# Flush the data before it becomes reachable under the boot name.
+	if have sync; then sync "$tmp" 2>/dev/null || sync; fi
+	mv -f "$tmp" "$dst" || { rm -f "$tmp"; die "$label: rename into '$dst' failed"; }
+	log "$label: $src -> $dst"
+	NEED_SYNC=1
+}
+
+final_sync() {
+	[ "${NEED_SYNC:-0}" = 1 ] || return 0
+	[ "$DRYRUN" = 1 ] && return 0
+	have sync || return 0
+	# -f syncs the containing filesystem; fall back to a global sync.
+	sync -f "$OMNI_BOOT_DIR" 2>/dev/null || sync
+	vlog "synced $OMNI_BOOT_DIR"
+}
+
+# ---------------------------------------------------------------------------
+# source discovery
+# ---------------------------------------------------------------------------
+find_kernel() {
+	ver=$1 hint=${2:-}
+	if [ -n "$hint" ] && [ -f "$hint" ]; then printf '%s\n' "$hint"; return 0; fi
+	for c in "/boot/vmlinuz-$ver" "/boot/Image-$ver" "/boot/vmlinux-$ver"; do
+		[ -f "$c" ] && { printf '%s\n' "$c"; return 0; }
+	done
+	return 1
+}
+
+find_dtb() {
+	ver=$1
+	base=${OMNI_DTB_SRC##*/}
+	for c in \
+		"/boot/dtb-$ver/$OMNI_DTB_SRC" \
+		"/usr/lib/linux-image-$ver/$OMNI_DTB_SRC" \
+		"/lib/firmware/$ver/device-tree/$OMNI_DTB_SRC" \
+		"/usr/lib/firmware/$ver/device-tree/$OMNI_DTB_SRC" \
+		"/boot/dtb-$ver/$base" \
+		"/usr/lib/linux-image-$ver/$base" \
+		"/boot/dtb/$OMNI_DTB_SRC" \
+		"/boot/dtb/$base"
+	do
+		[ -f "$c" ] && { printf '%s\n' "$c"; return 0; }
+	done
+	return 1
+}
+
+find_initrd() {
+	ver=$1 hint=${2:-}
+	if [ -n "$hint" ] && [ -f "$hint" ]; then printf '%s\n' "$hint"; return 0; fi
+	for c in "/boot/initrd.img-$ver" "/boot/initramfs-$ver.img"; do
+		[ -f "$c" ] && { printf '%s\n' "$c"; return 0; }
+	done
+	return 1
+}
+
+# ---------------------------------------------------------------------------
+# actions
+# ---------------------------------------------------------------------------
+do_kernel() {
+	ver=$1 hint=${2:-}
+	k=$(find_kernel "$ver" "$hint") ||
+		die "no kernel image found for version '$ver' (looked at \$2='$hint', /boot/vmlinuz-$ver)"
+	check_arm64_image "$k"
+	install_artifact "$k" "$OMNI_BOOT_DIR/$OMNI_KERNEL_NAME" "kernel"
+}
+
+do_dtb() {
+	ver=$1
+	d=$(find_dtb "$ver") || die "no DTB '$OMNI_DTB_SRC' found for version '$ver'
+  searched: /boot/dtb-$ver/, /usr/lib/linux-image-$ver/, /lib/firmware/$ver/device-tree/, /boot/dtb/
+  A slot without a DTB does not boot.  Is linux-dtb-*-meson64 installed, and does
+  the DTS actually build meson-axg-apollo.dtb?"
+	check_fdt "$d"
+	install_artifact "$d" "$OMNI_BOOT_DIR/$OMNI_DTB_NAME" "dtb"
+}
+
+# required=1 -> a missing initrd is fatal; required=0 -> warn and continue.
+do_initrd() {
+	ver=$1 hint=${2:-} required=${3:-1}
+	if i=$(find_initrd "$ver" "$hint"); then
+		install_artifact "$i" "$OMNI_BOOT_DIR/$OMNI_INITRD_NAME" "initrd"
+		return 0
+	fi
+	if [ "$required" = 1 ]; then
+		die "no initramfs found for version '$ver' (looked at \$2='$hint', /boot/initrd.img-$ver)"
+	fi
+	log "no initramfs for '$ver' yet -- /etc/initramfs/post-update.d/99-omni-flatten will place it"
+	# Do NOT leave a stale initrd behind under the fixed name: U-Boot would
+	# boot the new kernel against an old initramfs.
+	if [ -e "$OMNI_BOOT_DIR/$OMNI_INITRD_NAME" ]; then
+		log "WARNING: '$OMNI_BOOT_DIR/$OMNI_INITRD_NAME' exists but belongs to another kernel version"
+	fi
+	return 0
+}
+
+do_show() {
+	ver=${1:-}
+	printf 'boot dir        : %s\n' "$OMNI_BOOT_DIR"
+	printf 'kernel name     : %s\n' "$OMNI_KERNEL_NAME"
+	printf 'dtb name        : %s\n' "$OMNI_DTB_NAME"
+	printf 'initrd name     : %s\n' "$OMNI_INITRD_NAME"
+	printf 'dtb source path : %s\n' "$OMNI_DTB_SRC"
+	printf 'names verified  : %s\n' "${OMNI_BOOT_VERIFIED:-no}"
+	[ -n "$ver" ] || return 0
+	printf 'kernel source   : %s\n' "$(find_kernel "$ver" '' || echo '<not found>')"
+	printf 'dtb source      : %s\n' "$(find_dtb "$ver"       || echo '<not found>')"
+	printf 'initrd source   : %s\n' "$(find_initrd "$ver" '' || echo '<not found>')"
+}
+
+case "$CMD" in
+kernel)
+	[ $# -ge 1 ] || die "'kernel' needs a version argument"
+	warn_if_overlay_root
+	do_kernel "$1" "${2:-}"
+	do_dtb    "$1"
+	do_initrd "$1" "" 0
+	final_sync
+	;;
+initrd)
+	[ $# -ge 1 ] || die "'initrd' needs a version argument"
+	warn_if_overlay_root
+	do_initrd "$1" "${2:-}" 1
+	final_sync
+	;;
+all)
+	[ $# -ge 1 ] || die "'all' needs a version argument"
+	warn_if_overlay_root
+	do_kernel "$1" ""
+	do_dtb    "$1"
+	do_initrd "$1" "" 1
+	final_sync
+	;;
+show)
+	do_show "${1:-}"
+	;;
+*)
+	die "unknown command '$CMD' (try --help)"
+	;;
+esac
+
+exit 0

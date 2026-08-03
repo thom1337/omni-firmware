@@ -1,0 +1,9 @@
+# Shipped to silence a pam_env warning on EVERY login:
+#   pam_env(login:session): Unable to open env file: /etc/default/locale
+# mmdebstrap --variant=important does not install the locales package, so this
+# file never exists, and PAM complains once per serial and SSH login. C.UTF-8 is
+# built into glibc and needs no locale generation, which suits an appliance --
+# it gives correct UTF-8 handling (the login banner uses box-drawing characters)
+# without pulling in locale data we would then have to carry in both slots.
+LANG=C.UTF-8
+LC_ALL=C.UTF-8

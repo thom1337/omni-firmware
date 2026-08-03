@@ -1,0 +1,76 @@
+# /etc/fstab -- Avast Omni (Debian trixie, A/B overlay root).
+#
+# <file system>        <mount point>   <type>  <options>                                       <dump> <pass>
+#
+# ###########################################################################
+# ## THERE IS DELIBERATELY NO "/" LINE.                                     ##
+# ##                                                                        ##
+# ## The root filesystem is an overlayfs assembled in the initramfs by      ##
+# ## /etc/initramfs-tools/scripts/local-bottom/omni-overlay:                ##
+# ##     lower = /dev/mmcblk0p1 (slot A) or p2 (slot B), mounted READ-ONLY  ##
+# ##     upper = /dev/mmcblk0p5 (slot A) or p6 (slot B)   [= lower + 4]     ##
+# ## A "/" entry here would make systemd-fstab-generator emit a -.mount for ##
+# ## a device that is not what is actually mounted, and systemd-remount-fs  ##
+# ## would try to remount the overlay as ext4.  Leaving it out is correct   ##
+# ## for an overlay root; systemd handles an already-mounted / fine.        ##
+# ##                                                                        ##
+# ## Note this file is PER-SLOT state on purpose (see /rootfs/overlay/      ##
+# ## README.md): the slots have different lower/upper pairs, so /etc/fstab  ##
+# ## must never be relocated to the shared /data partition.                 ##
+# ###########################################################################
+#
+# ###########################################################################
+# ## THERE IS DELIBERATELY NO CGROUP v1 LINE.                               ##
+# ##                                                                        ##
+# ## The Yocto image carries                                                ##
+# ##   none /sys/fs/cgroup tmpfs ro,nosuid,nodev,noexec,mode=755,size=20m 0 0##
+# ## (repo/meta-apollo/recipes-core/base-files/files/fstab-logs:8), a hack  ##
+# ## to build a cgroup v1 hierarchy by hand.  systemd PID1 mounts cgroup2   ##
+# ## on /sys/fs/cgroup itself, before fstab is ever processed, and systemd  ##
+# ## >= 256 refuses to boot on a v1 hierarchy at all.  The line is not      ##
+# ## edited or commented here -- it simply does not exist.                  ##
+# ##                                                                        ##
+# ## Phase 8 gate: `stat -fc %T /sys/fs/cgroup` must print cgroup2fs.       ##
+# ###########################################################################
+
+# --- /data (p3): the only persistent, A/B-shared storage --------------------
+#
+# Replaces repo/meta-apollo/recipes-core/systemd-apollo/files/data.mount.
+# NOT A/B protected: a bad config written here survives a rollback.  See
+# rootfs/overlay/README.md for what may and may not live on it.
+#
+# nofail + a short device timeout is load-bearing: a corrupt or missing p3 must
+# degrade the box (no persistent SSH host keys), never stop it booting.
+# The bootable minimum lives in the image, so a failed /data is survivable; a
+# boot that blocks 90 s on a dead mount and then drops to emergency.target is
+# not, because emergency.target on a headless box is indistinguishable from a
+# brick unless the serial console happens to be attached.
+/dev/mmcblk0p3         /data           ext4    defaults,noatime,nodev,nosuid,nofail,x-systemd.device-timeout=15s  0  2
+
+# --- Volatile logs ----------------------------------------------------------
+#
+# /var/log on tmpfs.  Two reasons, both about the overlay:
+#   1. every byte written under / lands in the overlay upper (p5/p6), a small
+#      partition that is wiped by the flasher before each slot write -- filling
+#      it with logs is the classic way to make a slot stop booting;
+#   2. eMMC on a 2018 consumer part with unknown pre_eol_info does not want a
+#      syslog stream.
+# 64 MB is a cap, not a reservation: tmpfs only consumes what is written.  The
+# Yocto system used 140 MB for /var/volatile/log on the same 512 MB of RAM.
+# journald is additionally capped in /etc/systemd/journald.conf.d/10-omni.conf.
+#
+# If you need logs to survive a reboot, bind-mount a directory on /data instead
+# of enlarging this -- and accept that those logs are not A/B protected:
+#   /data/log            /var/log        none    bind,noatime,nofail             0  0
+tmpfs                  /var/log        tmpfs   rw,nosuid,nodev,noexec,noatime,mode=0755,size=64M            0  0
+
+# --- Other volatile space ---------------------------------------------------
+#
+# Explicit rather than relying on systemd's tmp.mount default, so the sizes are
+# reviewable and bounded on a 512 MB box.
+tmpfs                  /tmp            tmpfs   rw,nosuid,nodev,noatime,mode=1777,size=32M                   0  0
+tmpfs                  /var/tmp        tmpfs   rw,nosuid,nodev,noatime,mode=1777,size=16M                   0  0
+
+# /proc, /sys, /dev, /dev/pts, /dev/shm, /run and /sys/fs/cgroup are ALL mounted
+# by systemd PID1 or the initramfs.  Listing them here (as the Yocto fstab does)
+# is at best redundant and at worst fights the init system.

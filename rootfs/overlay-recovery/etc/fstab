@@ -1,0 +1,20 @@
+# /etc/fstab - Avast Omni RECOVERY slot (p7).
+#
+# Unlike the A/B slots there is NO overlay and NO initramfs here. U-Boot's
+# recovery paths clear ramdisk_addr_r and boot with init=/init, so the kernel
+# mounts p7 directly as a writable root. That works because the eMMC and ext4
+# drivers are built in (CONFIG_MMC=y, MMC_BLOCK=y, MMC_MESON_GX=y, EXT4_FS=y);
+# nothing has to be loaded from an initrd before root appears. Do not add a
+# root line here -- U-Boot passes root=${mender_kernel_root} on the cmdline.
+#
+# /data is the ONLY partition shared with the A/B slots. It carries the
+# Tailscale state, which is why a recovery boot rejoins the tailnet as the same
+# node without anyone typing anything.
+/dev/mmcblk0p3         /data           ext4    defaults,noatime,nodev,nosuid,nofail,x-systemd.device-timeout=15s  0  2
+
+# The root here is a real read-write filesystem, not an overlay upper, so these
+# tmpfs mounts exist to keep a runaway log from filling the partition you are
+# depending on to fix the box.
+tmpfs                  /var/log        tmpfs   rw,nosuid,nodev,noexec,noatime,mode=0755,size=32M            0  0
+tmpfs                  /tmp            tmpfs   rw,nosuid,nodev,noatime,mode=1777,size=32M                   0  0
+tmpfs                  /var/tmp        tmpfs   rw,nosuid,nodev,noatime,mode=1777,size=16M                   0  0

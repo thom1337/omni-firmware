@@ -1,0 +1,61 @@
+# Package set for the RECOVERY slot (p7).
+#
+# p7 is 450 MiB against the A/B slots' 850 MiB, and the A/B image already uses
+# 669 MiB. So this list is not "the same thing, smaller" -- it is only what is
+# needed to GET IN and REPAIR A SLOT, and nothing whatsoever else. Every entry
+# below earns its bytes against that single job.
+#
+# The job, concretely:
+#   1. come up on the network unattended        (systemd-networkd, resolved)
+#   2. let someone in                           (openssh-server, + tailscale
+#                                                installed from the upstream
+#                                                tarball, not a package)
+#   3. fetch an image                           (curl, ca-certificates)
+#   4. write and verify a slot                  (coreutils, gzip, e2fsprogs)
+#   5. move the boot pointer                    (libubootenv-tool)
+
+systemd-sysv
+udev
+dbus
+busybox
+linux-base
+
+# The U-Boot environment. Without this the recovery slot can write a slot but
+# cannot make the box boot it, which is half a repair.
+libubootenv-tool
+
+# Network, unattended.
+systemd-resolved
+systemd-timesyncd
+iproute2
+iputils-ping
+ca-certificates
+curl
+
+# Access.
+openssh-server
+openssh-client
+
+# Repair.
+e2fsprogs
+fdisk
+util-linux
+mmc-utils
+
+# Enough of an editor to fix a config by hand over serial at 115200 baud.
+# nano rather than vim: a tenth of the size, and nobody needs modal editing
+# while the box is down.
+nano
+
+# ---------------------------------------------------------------------------
+# DELIBERATELY NOT INSTALLED (present in the A/B image, omitted here)
+# ---------------------------------------------------------------------------
+#   initramfs-tools   The recovery slot boots with ramdisk_addr_r cleared and
+#                     init=/init -- there is no initrd in this boot path at all,
+#                     so building one wastes ~30 MiB and a lot of build time.
+#                     This is the single biggest saving in the list.
+#   vim, btop, jq     comfort, not repair.
+#   tcpdump, iperf3   diagnosis of a WORKING box; this slot exists for a broken
+#   fio               one, and you can install them at runtime if you must.
+#   wireguard-tools   the recovery path out is ssh or tailscale, not a tunnel
+#   nftables/iptables that has to be configured first.

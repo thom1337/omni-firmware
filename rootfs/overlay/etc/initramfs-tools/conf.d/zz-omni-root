@@ -1,0 +1,52 @@
+# /etc/initramfs-tools/conf.d/zz-omni-root -- Avast Omni runtime initramfs vars.
+#
+# WHY THIS FILE AND NOT initramfs.conf
+# ------------------------------------
+# mkinitramfs copies /etc/initramfs-tools/initramfs.conf to /conf/initramfs.conf
+# and every /etc/initramfs-tools/conf.d/* to /conf/conf.d/*.  At boot, /init
+# sources them in that order:
+#
+#     . /conf/initramfs.conf
+#     for conf in conf/conf.d/*; do [ -f "$conf" ] && . "$conf"; done
+#     ... only then does it parse /proc/cmdline ...
+#
+# so conf.d wins over initramfs.conf, and the kernel command line still wins over
+# both.  conf.d is also the only one of the two that is not a dpkg conffile, so
+# it never produces a "modified conffile" prompt on an initramfs-tools upgrade.
+#
+# The "zz-" prefix is load-bearing: the loop above is alphabetical, and Debian's
+# own tooling writes /etc/initramfs-tools/conf.d/resume.  Without the prefix that
+# file would be sourced last and could reintroduce a resume device.
+
+# ---------------------------------------------------------------------------
+# ROOTFSTYPE -- consumed by /usr/share/initramfs-tools/scripts/local:
+#
+#     if [ -z "${ROOTFSTYPE}" ] || [ "${ROOTFSTYPE}" = auto ]; then
+#             FSTYPE=$(get_fstype "${ROOT}")
+#     else
+#             FSTYPE=${ROOTFSTYPE}
+#     fi
+#
+# Without it, get_fstype() has to probe the device with blkid; naming it makes
+# the root mount deterministic, removes a blkid dependency from the boot path,
+# and makes checkfs() call fsck.ext4 with the right type.
+#
+# It cannot be set from the kernel command line here: the stored U-Boot
+# CONFIG_BOOTARGS is "rootwait rw console=ttyAML0" and MENDER_BOOTARGS prepends
+# root=${mender_kernel_root}.  Changing that means writing the single,
+# non-redundant 8 KB U-Boot environment -- which this migration avoids.
+ROOTFSTYPE=ext4
+
+# ---------------------------------------------------------------------------
+# No swap and no hibernation image exist on this device.  Setting RESUME=none
+# stops /init spending ROOTDELAY seconds looking for one and stops
+# update-initramfs warning on every run.
+RESUME=none
+
+# ---------------------------------------------------------------------------
+# NOTE on the read-write root: bootargs carry `rw` and no `ro`, so /init sets
+# readonly=n and scripts/local mounts the slot with -w.  That is corrected by
+# /etc/initramfs-tools/scripts/local-bottom/omni-overlay, which remounts the
+# lower read-only before using it as an overlayfs lowerdir.  Do NOT "fix" it by
+# adding `ro` to bootargs: systemd would then also try to keep / read-only, and
+# the overlay merged root must be writable.

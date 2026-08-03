@@ -1,0 +1,58 @@
+# Modules kept in the RECOVERY slot (p7), and why this list is short.
+#
+# The stock module tree is 212 MiB. p7 is 450 MiB total, and the rest of a
+# usable recovery system does not fit alongside it. Rather than guess at what
+# is safe to delete, this list was taken from `lsmod` on THIS hardware running
+# THIS kernel -- it is what the board actually loads, not what it might.
+# build-rootfs.sh --keep-modules resolves each entry's dependencies through
+# modules.dep and deletes everything else, then re-runs depmod.
+#
+# Two things make this safe that would not be true on a general-purpose image:
+#   * the drivers that must work before any module can load -- eMMC, ext4, the
+#     Ethernet MAC/PHY -- are built into the kernel (CONFIG_MMC=y, MMC_BLOCK=y,
+#     MMC_MESON_GX=y, EXT4_FS=y, REALTEK_PHY=y).
+#   * CONFIG_TUN=y, so Tailscale needs no module either. That is what lets the
+#     recovery slot keep Tailscale, which is the entire point of it: a slot you
+#     can reach from anywhere beats a slot you can reach from the same room.
+#
+# Anything absent here simply does not load in recovery. Audio and video are in
+# the list only because the board loads them; nothing in recovery needs them,
+# and dropping them later is a safe further saving.
+autofs4
+axg_audio
+binfmt_misc
+cfg80211
+clk_phase
+dwmac_generic
+efi_pstore
+ge2d
+ip_tables
+mc
+meson_rng
+nf_conntrack
+nf_defrag_ipv4
+nf_defrag_ipv6
+nf_nat
+nf_tables
+nfnetlink
+nft_chain_nat
+nft_compat
+nvmem_meson_efuse
+polyval_ce
+reset_meson_audio_arb
+rfkill
+sch_fq_codel
+sclk_div
+scpi_hwmon
+v4l2_mem2mem
+videobuf2_common
+videobuf2_dma_contig
+videobuf2_memops
+videobuf2_v4l2
+videodev
+x_tables
+xt_MASQUERADE
+xt_connmark
+xt_conntrack
+xt_mark
+xt_tcpudp
