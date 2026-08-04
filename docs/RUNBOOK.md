@@ -37,6 +37,8 @@ fix it.
 | [A](#appendix-a--the-device-in-one-page) | Appendix A — the device in one page |
 | [B](#appendix-b--u-boot-environment-reference) | Appendix B — U-Boot environment reference |
 | [C](#appendix-c--tool-index) | Appendix C — tool index |
+| [D](#appendix-d--the-recovery-slot-p7) | Appendix D — the recovery slot (p7) |
+| [E](#appendix-e--tailscale-exit-node-and-lan-access) | Appendix E — Tailscale: exit node and LAN access |
 
 ---
 
@@ -183,14 +185,34 @@ Boot the other slot by hand, persisting nothing:
 => booti 0x08080000 0x13000000:${filesize} 0x08008000
 ```
 
-Change `0:1`/`mmcblk0p1` to `0:2`/`mmcblk0p2` for slot B, `0:7`/`mmcblk0p7` for
-recovery. Substitute the **captured** artefact names from
+Change `0:1`/`mmcblk0p1` to `0:2`/`mmcblk0p2` for slot B. Substitute the
+**captured** artefact names from
 [`HARDWARE.md` §6.1](HARDWARE.md#61-the-three-global-artefact-names--p4-capture-verbatim);
 never type them from the patches.
 
 **`${filesize}` is set by the LAST `ext4load`.** Load the ramdisk last, always.
 Getting this wrong hands `booti` a garbage initrd length and the kernel panics
 in a way that looks like a DTS problem.
+
+**p7 is a different recipe — do not reuse the one above.** The Debian recovery
+image is built with `--no-initramfs` and has *no* ramdisk under `/boot`, so the
+third `ext4load` fails, `${filesize}` keeps whatever the `Image` load left in
+it, and you hit exactly the garbage-initrd panic described above. Boot it with
+no initrd at all — the `-` is the "no ramdisk" argument to `booti`:
+
+```
+=> ext4load mmc 0:7 0x08008000 /boot/meson-axg-apollo.dtb
+=> ext4load mmc 0:7 0x08080000 /boot/Image
+=> setenv bootargs root=/dev/mmcblk0p7 rootwait rw console=ttyAML0 panic=10 init=/init
+=> booti 0x08080000 - 0x08008000
+```
+
+`init=/init` matches what U-Boot's own recovery paths pass. See
+[Appendix D](#appendix-d--the-recovery-slot-p7).
+
+If p7 still holds the **factory** image, the original three-load recipe is the
+right one — that image does ship an `apollo-mfc-initrd-image-*`. Check before
+you type: `ext4ls mmc 0:7 /boot`.
 
 Once you have a shell, fix the environment properly and reboot.
 
@@ -208,6 +230,9 @@ If `setexpr` is absent, the binary predates patch `0041` and **the button does
 nothing**. If p7 is empty, there is nothing to boot into. Both are recorded in
 `HARDWARE.md`; if you did not check, assume the worst.
 
+What you land in is a Debian system you can log into, with ssh, Tailscale and
+the flashing tools — see [Appendix D](#appendix-d--the-recovery-slot-p7).
+
 ### Rank 3 — `force_hard_recovery`
 
 **Depends on:** a working Linux *now*, to arm it for later.
@@ -219,8 +244,14 @@ nothing**. If p7 is empty, there is nothing to boot into. Both are recorded in
 ```
 
 Same destination as rank 2, same precondition on p7, but armed in advance from
-software. **Set it back to `0` from recovery**, or every subsequent boot goes to
-p7 too.
+software.
+
+Nothing in U-Boot ever unsets this flag, so left alone it makes recovery
+permanent. **The Debian recovery image clears it for you**, before
+`sysinit.target`, on every boot — `omni-recovery-disarm.service`. One reboot in,
+one reboot back out. On a device still running the *vendor* p7 image there is no
+such service and you must set it back to `0` by hand, or every subsequent boot
+goes to p7 too. Details in [Appendix D](#appendix-d--the-recovery-slot-p7).
 
 ### Rank 4 — `bootcount` / `bootlimit` auto-rollback
 
@@ -997,7 +1028,7 @@ run **on the live device**.
 | `p3` | `/data` — shared, **not** A/B protected. A bad config here survives a rollback. |
 | `p5` | overlay upper for slot A |
 | `p6` | overlay upper for slot B |
-| `p7` | recovery |
+| `p7` | recovery — 450 MiB, no overlay, no initrd. [Appendix D](#appendix-d--the-recovery-slot-p7) |
 
 **Overlay upper = root partition + 4.** Anything written to `/etc` or `/var`
 reverts to *that slot's stale state* on an A/B flip — which is why per-slot
@@ -1020,6 +1051,34 @@ load /boot/${mender_kernel_name}, ${mender_dtb_name}, ${mender_ramdisk_name}
 **Recovery is checked ahead of A/B selection, and `altbootcmd` re-enters
 `bootcmd`.** That is the single most important structural fact about this
 device.
+
+### Front-panel LEDs
+
+The only status output a headless box has before you have a shell — and the only
+one that still works after userspace has died, because the kernel drives all
+three from triggers with no process involved.
+
+| LED | A/B slots | Recovery |
+|---|---|---|
+| `apollo:power` | `heartbeat` — pulses, and the rate follows load average | same |
+| `apollo:app1` | `netdev` on `end0` — solid on link, flickers with traffic | **solid** (`default-on`) |
+| `apollo:app2` | `panic` — lights *only* on a kernel panic | **solid** (`default-on`) |
+
+Read it as:
+
+* **Power breathing** = alive. A box that has wedged stops breathing, which you
+  cannot learn any other way without a cable.
+* **Both app LEDs solid** = you are in recovery. That combination never occurs
+  in normal operation, and you can see it across a room.
+* **app2 lit on a slot** = it panicked. Otherwise invisible: journald is
+  `Storage=volatile` and `/var/log` is a tmpfs, so a panic normally leaves no
+  evidence at all.
+
+Set by udev (`60-omni-leds.rules`) when the LED device appears, so it applies on
+a cold boot and a hotplug alike. `CONFIG_LEDS_TRIGGER_NETDEV` is `=y`, not `=m`:
+as a module it would be absent from recovery's pruned module tree, and it would
+race udev — writing an unavailable trigger name to sysfs fails *silently* and
+leaves the LED dark.
 
 ---
 
@@ -1053,7 +1112,17 @@ Read: `fw_printenv | sort`. Write: always inside the `force_ro` dance
 Everything below has `--help`, and everything destructive has `--dry-run`.
 **Read the `--dry-run` output before the real run.** Every one of these is
 written to run *on the device* except `omni-backup.sh`, `sync-armbian-board.sh`,
-`validate-dts.sh` and the `rootfs/` builders, which run on the workstation.
+`validate-dts.sh`, the serial drivers and the `rootfs/` builders, which run on
+the workstation.
+
+**On a Debian device the device-side tools are already there, in `/usr/sbin`** —
+shipped in the image, in both slots and in recovery, so the box can update
+itself with no workstation involved. Do not copy them to `/usr/local/sbin`:
+that path is on the overlay upper and therefore *per-slot*, so the copy
+disappears the moment you boot the other half of the pair. That has already
+cost one silent no-op — a p7 flash that did nothing because `omni-flash.sh`
+lived on the slot we had just booted away from, and a missing script in a
+pipeline is a no-op, not an error.
 
 | Script | Runs on | What it does | Phase |
 |---|---|---|---|
@@ -1062,13 +1131,18 @@ written to run *on the device* except `omni-backup.sh`, `sync-armbian-board.sh`,
 | `tools/omni-arm.sh` | device | the Mender "install" env write: pointer, `bootcount=0`, `upgrade_available=1`. `--same-slot` is the Phase 1 drill. | 1, 8 |
 | `tools/omni-commit.sh` | device | the "commit" write. Refuses if the running `root=` disagrees with `mender_boot_part`. | 1, 8 |
 | `tools/omni-rollback.sh` | device | deliberate flip to the other slot, mirroring `mender_altbootcmd` exactly | 1, 8 |
-| `tools/omni-flash.sh` | device | install + verify + arm a slot image, with the quiesce/watchdog-off dance and the overlay wipe | 8, 9 |
+| `tools/omni-flash.sh` | device | install + verify + arm a slot image, with the quiesce/watchdog-off dance and the overlay wipe. `--image -` reads the image from stdin (the only way in on a stock box, whose curl has no TLS); `--slot 7` writes recovery and never arms. | 8, 9 |
+| `tools/omni-set-slot.sh` | device | set the boot pointer directly, for the case where `omni-arm.sh`'s preconditions cannot be met | — |
 | `tools/omni-lib.sh` | device | shared helpers for the above; not run directly | — |
+| `tools/omni-tailscale-install.sh` | device | the live-install counterpart to the build-time Tailscale path, for a box that predates it. [Appendix E](#appendix-e--tailscale-exit-node-and-lan-access) | — |
+| `tools/omni-console.py` | workstation | non-interactive serial console driver: run a command, capture the output | 0–9 |
+| `tools/omni-uboot.py` | workstation | drives the `=>` prompt non-interactively | 0, 1 |
+| `tools/omni-push.py` / `tools/omni-dd-push.py` | workstation | stream a file onto the box over 115200 baud serial, when there is no network | 0, 4 |
 | `tools/sync-armbian-board.sh` | workstation | one-way sync of `board/` into the pinned `armbian/` submodule, including the kernel-config **merge** | 2, 3 |
 | `tools/validate-dts.sh` | workstation | compile + decompile the DTS against a sparse mainline checkout; classifies dtc warnings | 3 |
 | `tools/check-kconfig-invariants.sh` | workstation or CI | asserts the kernel-config delta on a `.config`, a `linux-image` deb, or `/proc/config.gz` | 3, 6 |
-| `tools/check-image-invariants.sh` | workstation, CI, or device (`--rootfs /`) | asserts the rootfs/image invariants; read-only | 7, 9 |
-| `rootfs/build-rootfs.sh` | workstation | mmdebstrap → ext4 slot image with a pinned feature set | 7 |
+| `tools/check-image-invariants.sh` | workstation, CI, or device (`--rootfs /`) | asserts the rootfs/image invariants; read-only. `--recovery` asserts the p7 contract instead of the slot one | 7, 9 |
+| `rootfs/build-rootfs.sh` | workstation | mmdebstrap → ext4 slot image with a pinned feature set. The recovery image is the same script with a different overlay, package list and `--no-initramfs` / `--keep-modules`; see [Appendix D](#appendix-d--the-recovery-slot-p7) | 7 |
 | `rootfs/build-in-docker.sh` | workstation | the same, containerised | 7 |
 
 ### Quickest useful commands
@@ -1090,3 +1164,406 @@ written to run *on the device* except `omni-backup.sh`, `sync-armbian-board.sh`,
 # is the watchdog going to bite me during this maintenance?
 # systemctl show -p RuntimeWatchdogUSec --value
 ```
+
+---
+
+## Appendix D — the recovery slot (p7)
+
+p7 is checked **ahead of** A/B slot selection ([Appendix A](#appendix-a--the-device-in-one-page)),
+which is what makes it useful: it is reachable when *both* slots are broken, and
+it is not selected by `mender_boot_part`. On a migrated box it holds a Debian
+image built from this repository, so recovery is a system you can log into and
+work from rather than a splash screen.
+
+> **Writing it is one-way.** The factory p7 holds
+> `apollo-mfc-initrd-image-meson-apollo.cpio.gz` and a 134 MB
+> `recovery-data.ext4.bz2` dated 2024-08-29. **Nothing in this repository can
+> rebuild either**, and `docs/HARDWARE-MEASURED.md` calls p7 the single
+> irreplaceable value at risk. The only copy is the whole-eMMC backup taken in
+> [Phase 0](#phase-0--pre-flight). Take it before you flash p7, and keep it.
+
+This does **not** make `force_run_mfc=1` survivable. That path looks for the MFC
+initrd, which is a different artefact from the recovery rootfs and still does not
+exist here — see [§3](#3-if-you-brick-it), "the environment is corrupt".
+
+### The three ways in
+
+| Entrance | Cmdline marker | Does it stop happening on its own? |
+|---|---|---|
+| Reset button held from power-on (GPIOAO_10, active low) | `factory_reset` | yes — it is a level read at boot; let go of the button |
+| Watchdog latch, `*0xff80023c == 0xd000` | `hard_recovery` | **not established.** [P5](HARDWARE-MEASURED.md#9-p5-partial-result--a-plain-reboot-does-not-trap-the-box-in-recovery) measured two of six reset types: a Linux `reboot` and a U-Boot `reset` both leave the register `0x0000`. A genuine watchdog bite has not been tested. If every boot lands in recovery, this is why — see the [decision table](#decision-table). |
+| `force_hard_recovery=1` in the environment | `hard_recovery` | **no** — nothing in U-Boot ever unsets it. See [Getting out](#getting-out). |
+
+All three **clear `ramdisk_addr_r` and boot `init=/init`**. That is why the
+recovery image is not a slot image with a different hostname: it has no initrd
+to load, so it cannot use the overlay-root initramfs the slots use, and PID 1
+has to exist at `/init`.
+
+`/init` is a two-line `exec` into systemd and deliberately does **not** forward
+`"$@"`. U-Boot prepends `factory_reset` or `hard_recovery` as a bare word on the
+kernel command line, the kernel hands words it does not recognise to init as
+arguments, and systemd would complain about them on every recovery boot.
+Anything that needs to know why it is here reads `/proc/cmdline`.
+
+### Recognising it without logging in
+
+**Two solid LEDs.** `app1` and `app2` are both `default-on` in recovery and never
+both solid in normal operation — see the LED table in
+[Appendix A](#appendix-a--the-device-in-one-page). `power` still breathes, so
+"alive" means the same thing in both. The tell only appears once udev has
+processed the LED `add` events; before that the LEDs sit at their DT defaults,
+which is momentarily indistinguishable from a normal slot boot.
+
+Once you are in: the hostname is `omni-recovery`, the MOTD says so in red, and
+the reliable machine-readable signal is the marker on `/proc/cmdline`:
+
+```
+# grep -o 'factory_reset\|hard_recovery' /proc/cmdline
+# cat /etc/hostname                        # omni-recovery
+```
+
+`mender_boot_part` is not the signal to trust. `check_watchdog` forces it to `7`
+ahead of A/B selection, but the reset-button and `force_hard_recovery` paths
+reach p7 without going through slot selection at all — the cmdline marker is
+written by every one of the three.
+
+Two things the marker does *not* tell you. The button branch and the
+watchdog/flag branch are mutually exclusive in U-Boot, and a held button is
+checked first — so `factory_reset` masks a latched register entirely, and
+proves nothing about `0xff80023c`. And the `force_run_mfc` path reaches p7 with
+**no marker at all**, so every recovery check in this repo — the disarm reason
+line, the MOTD, `omni_is_recovery_boot()` — reports "not a recovery boot" on
+it.
+
+### What is in it
+
+| | |
+|---|---|
+| Size | 450 MiB (`--blocks 115200`) |
+| Packages | 19, from `rootfs/packages-recovery.list` |
+| Modules | 38, from `rootfs/modules-recovery.keep` — what this board actually loads, and nothing else |
+| Root | its own ext4 on p7, mounted directly. **No overlay, no upper partition** |
+| initrd | none (`--no-initramfs`) |
+| Network | `systemd-networkd`, the same `20-eth.network` as the slots, the same `192.168.77.77/24` rescue address |
+| Remote access | sshd with the same authorised key, **and Tailscale** |
+| `/data` | p3, the same partition the slots use |
+| Operator tools | `/usr/sbin/omni-{lib,flash,arm,commit,rollback,preflight}.sh` — the same set the slots carry |
+
+The three that surprise people:
+
+**It is on the tailnet.** Tailscale state lives on `/data/tailscale`, shared with
+both slots, so a box that drops into recovery comes back as the *same node* and
+is reachable over ssh from wherever you are. It also silently resumes
+advertising the LAN and the exit node — see
+[Appendix E](#appendix-e--tailscale-exit-node-and-lan-access).
+
+**It can flash the slots — with two constraints.** The tools are in `/usr/sbin`,
+inside the image, not in the per-slot `/usr/local/sbin`, so they are there when
+you get here. But:
+
+* **`omni-flash.sh` refuses to write the slot that `mender_boot_part` names**,
+  from recovery as much as from a slot — and that is usually the very slot you
+  came here to repair. Point the environment at the good one first.
+* **You cannot stage the image.** `/data` is 142 MB with ~130 MB free; a slot
+  image does not fit. Stream it in.
+
+In recovery, point the environment at the good slot first:
+
+```
+# omni-set-slot.sh --slot 2
+```
+
+Then rebuild the broken one, streaming the image from the workstation:
+
+```
+$ ssh root@omni-recovery 'omni-flash.sh --slot 1 --image - --compression gzip' \
+      < omni-slot.ext4.gz
+```
+
+`--image -` needs an explicit `--compression`: there is no filename to infer it
+from, and guessing wrong would write a still-compressed stream and only fail at
+the sha256, an hour later over a slow link.
+
+**Changes you make in recovery persist.** p7 is a plain read-write ext4 with no
+overlay, so an edit here stays on p7 across recovery boots. The MOTD's "nothing
+you change here survives a normal boot" means *this is not one of the A/B
+slots*, not *this is volatile*. Logs are the opposite: `/var/log` is a 32 MB
+tmpfs and journald is `Storage=volatile`, so **diagnostics disappear at
+reboot** — copy anything you need to `/data` before rebooting.
+
+### What it deliberately does not have
+
+| Absent | Why |
+|---|---|
+| `omni-commit.service` | Committing is an A/B notion. p7 is never armed, and nothing in recovery may touch the A/B environment — that is the state it exists to repair. |
+| `omni-deadman.timer` | It reboots a slot that is still armed 15 minutes in. In recovery it would reboot the very system you booted to fix the box. |
+| `ethtool` | Not in the 19-package list — so `omni-nic-offload.service` ships but is skipped by its `ConditionPathExists`. Harmless (it is a throughput optimisation), but it means forwarding from recovery is slower than from a slot, and the unit shows "condition failed" rather than success. |
+| initramfs-tools, `vim`, `btop`, `tcpdump`, `iperf3`, `fio`, `nftables` | 450 MiB. `nano` is the editor. |
+
+The *units* are absent; `/usr/sbin/omni-commit.sh` and `omni-rollback.sh` are
+still installed, because the tool set is uniform across all three images. Do not
+run them from p7 — there is nothing armed to commit, and rolling back from a
+partition that is not part of the pair is meaningless.
+
+`tools/check-image-invariants.sh --recovery` asserts this contract against a
+real mounted image, so it cannot regress quietly.
+
+### Getting out
+
+The reset-button and watchdog entrances are edge-triggered. `force_hard_recovery=1`
+is not — nothing in U-Boot ever unsets it, so left alone it makes recovery
+permanent, and the only way out would be the serial `=>` prompt. Since it is
+also the only way to reach recovery *without physical access*, it is exactly the
+mechanism you will use remotely and exactly the one that would strand you.
+
+So the recovery image clears it, first thing, before `sysinit.target`:
+`omni-recovery-disarm.service`. It is unconditional — a reset-button boot that
+finds a stale flag clears it too.
+
+```
+# journalctl -b -u omni-recovery-disarm
+# fw_printenv force_hard_recovery         # 0
+# reboot                                  # back to mender_boot_part
+```
+
+**Do not read `systemctl status` for this.** The service exits `0` on every
+failure path — no `fw_setenv`, unusable `/etc/fw_env.config`, failed unlock,
+failed write — and a missing `/etc/fw_env.config` makes systemd *skip* it as an
+unmet condition. All three look like success. Deliberately so: not booting the
+thing you booted to fix the box is worse than not disarming. The real signals
+are the journal lines (`CANNOT disarm`, `NOT disarmed`, `READ-BACK FAILED`), the
+`STILL ARMED` line in the MOTD, and `fw_printenv force_hard_recovery` itself.
+If it did not disarm, clear the flag by hand inside the `force_ro` dance
+([rule 2](#2-the-seven-rules)) before you reboot.
+
+It clears **only** `force_hard_recovery`. A latched watchdog register,
+`force_run_mfc`/`force_run_eol`, or a `mender_boot_part` of `7` will each send
+you straight back — see the [decision table](#decision-table).
+
+### Entering recovery on purpose
+
+From a running slot:
+
+```
+# echo 0 > /sys/block/mmcblk0boot0/force_ro
+# fw_setenv force_hard_recovery 1
+# echo 1 > /sys/block/mmcblk0boot0/force_ro
+# reboot
+```
+
+One reboot lands in recovery; recovery disarms itself; the next reboot returns
+to `mender_boot_part`. That round trip is how the image was proven end to end.
+
+**Confirm p7 holds the repo-built image before you do this remotely.** The
+automatic disarm exists only in that image. On a unit still running the factory
+p7, setting `force_hard_recovery` from software is a one-way trip that ends at
+the serial console.
+
+### Writing p7
+
+```
+# omni-flash.sh --slot 7 --image omni-recovery.ext4.gz
+```
+
+`--slot 7` is not a slot flash with a different number. Every A/B-specific step
+is skipped, because none of them mean anything for p7:
+
+| | slot flash | `--slot 7` |
+|---|---|---|
+| Overlay upper wiped | yes (p5/p6) | **no — p7 has none** |
+| Arms afterwards | yes, via `omni-arm.sh` | **never** |
+| Epilogue suggests | `omni-arm.sh --slot N` | how to *enter* recovery, and "do not arm this" |
+
+Arming p7 would set `mender_boot_part=7` and make recovery the permanent boot
+target — the same failure the disarm service exists to prevent, arrived at from
+the other direction. The tool refuses rather than trusting you to remember.
+
+Writing p7 touches p7 and nothing else, and performs no environment write at
+all, so it cannot disturb a running slot.
+
+Three things that look like faults and are not:
+
+* **`umount /dev/mmcblk0p7` first.** The tool refuses a mounted target, and p7
+  is exactly what you will have mounted read-only to inspect it.
+* It still requires `mkfs.ext4` or `mke2fs` to be present, even though it never
+  formats anything on this path — the tool check runs before slot selection.
+* It prints a `--keep-overlay: p was NOT reformatted` warning with an empty
+  partition number. p7 has no overlay upper at all; the message is a
+  shared-code artefact, not a stale-files warning.
+
+And one that is: the hand-boot recipe `omni-flash.sh` prints in its epilogue is
+the **slot** recipe, with a ramdisk load and no `init=/init`. For p7 use the one
+in [§3 rank 1](#rank-1--the-serial--prompt) instead.
+
+### Building it
+
+```
+$ bash rootfs/build-in-docker.sh --privileged --kernel-debs rootfs/kernel-debs \
+      --blocks 115200 \
+      --overlay rootfs/overlay-recovery \
+      --packages rootfs/packages-recovery.list \
+      --no-initramfs \
+      --keep-modules rootfs/modules-recovery.keep \
+      --hostname omni-recovery \
+      --name omni-recovery \
+      --ssh-pubkey "$(cat ~/.ssh/id_ed25519.pub)"
+```
+
+**`--blocks 115200` is load-bearing.** The builder's only size ceiling is p1's
+891 MB; there is nothing that knows p7 is 450 MiB. Omit it and you get a
+perfectly valid, fully-asserted 850 MiB "recovery" image that simply cannot be
+written — and you find out from `omni-flash.sh` on the device, during a repair,
+after the download. `--blocks` and `--size-mib` set the same variable and the
+last one wins, so do not pass both.
+
+CI does exactly this from `build-omni-rootfs.yml` with `variant: recovery`, and
+`release.yml` publishes the result alongside the slot image on every `v*` tag.
+
+---
+
+## Appendix E — Tailscale: exit node and LAN access
+
+The images ship as a subnet router and exit node by default. Both are only
+**offers** — nothing routes anywhere until the routes and the exit node are
+approved in the admin console, which the device cannot do for itself.
+
+### What runs at boot
+
+| Unit | What it does |
+|---|---|
+| `omni-tailscale-auth.service` | brings the node up with a pre-auth key on first boot; state goes to `/data/tailscale` |
+| `omni-tailscale-routes.service` | derives the LAN prefix and calls `tailscale set --advertise-routes=… --advertise-exit-node` |
+| `omni-nic-offload.service` | `ethtool -K … rx-udp-gro-forwarding on rx-gro-list off` |
+| `99-omni-forwarding.conf` | `net.ipv4.ip_forward=1`, `net.ipv6.conf.all.forwarding=1` |
+
+### It runs once, at boot, and never again
+
+`omni-tailscale-routes.service` is a `Type=oneshot`. If the node is not enrolled
+when it fires — `BackendState` anything but `Running` — it logs that and exits
+`0`. There is no timer, no retry, no path unit. The unit then sits at
+`active (exited)`, which reads as success.
+
+So: **enrol a box by hand and it will be on the tailnet advertising nothing.**
+
+```
+# systemctl restart omni-tailscale-routes     # after any manual `tailscale up`
+# journalctl -u omni-tailscale-routes -b
+```
+
+### The prefix is derived, not configured
+
+`omni-tailscale-routes` reads the kernel's own connected route on whichever
+interface carries the default route. A hardcoded `192.168.x.0/24` would be
+advertised **even on a LAN the box is not attached to** — the control plane
+would approve it, and the tailnet would route that subnet to a box that drops
+every packet, silently. Deriving it means the advertisement follows the box.
+
+`192.168.77.0/24` is excluded by name. That is the rescue address every Omni
+carries in `20-eth.network` so you can plug a laptop straight into the port when
+DHCP has failed. Advertising it would have every box on the tailnet claiming the
+same private `/24`, and whichever won the primary election would black-hole
+everyone else's rescue path.
+
+Tune it in `/etc/default/omni-tailscale`:
+
+| Setting | Default | |
+|---|---|---|
+| `OMNI_TS_ADVERTISE` | `auto` | `auto` derives as above. `off` leaves advertisements alone — use it if you set them by hand, or the boot-time unit reasserts over your change. Anything else is taken as a literal comma-separated prefix list. |
+| `OMNI_TS_EXIT_NODE` | `yes` | offer this box as an exit node |
+
+Four sharp edges in that file, all of which fail quietly:
+
+* **Both values are matched as exact lowercase strings.** `OFF` is not `off`; it
+  falls through and is passed to `tailscale set --advertise-routes=OFF`, which
+  fails, logs `WARNING: tailscale set failed`, and still exits `0`.
+* **The `192.168.77.0/24` exclusion only applies to `auto`.** An explicit list is
+  passed through unfiltered, so pinning the prefixes can reintroduce exactly the
+  fleet-wide collision the exclusion exists to prevent.
+* **`OMNI_TS_EXIT_NODE=no` does not retract an existing offer.** The script only
+  ever *adds* `--advertise-exit-node`; omitting a flag leaves the stored pref
+  alone, and that pref is in the shared `/data` state. Retract it by hand with
+  `tailscale set --advertise-exit-node=false`.
+* **Editing this file on a slot does not survive a reflash of that slot.** It
+  ships in the read-only lower, so your edit lands in the overlay upper (p5/p6),
+  and `omni-flash.sh` runs `mkfs.ext4` on the target's upper before every write.
+  It is also per-slot: the other slot and recovery never see it.
+
+Two more things the derivation does not do. It is **IPv4-only** — `ip -4` in
+both queries — so LAN hosts are reachable over v6 only via the exit node, never
+via a subnet route. And if the default route is missing at the moment the unit
+runs, it advertises the exit node alone and **leaves any previously stored
+subnet route in place**, because `tailscale set` does not clear prefs it is not
+given. A box that changed LANs during that window keeps advertising its old,
+already-approved prefix.
+
+```
+# tailscale status --json | grep -i primary
+# tailscale set --advertise-routes=            # withdraw all routes, by hand
+```
+
+### `ip_forward` is the one that fails silently
+
+Without it the box advertises routes, the admin console shows them approved,
+the LED flickers, and **every forwarded packet is dropped** — the kernel
+discards anything not addressed to it, with no error anywhere. There is no
+symptom except that it does not work. `tools/check-image-invariants.sh` asserts
+it in both images for that reason.
+
+Note what it makes the box: a router between every network it can see, including
+between the DHCP LAN and the `192.168.77.0/24` rescue address. On a single-NIC
+appliance on a trusted LAN that is harmless. On anything facing an untrusted
+network it is not, and you would want an nftables forward policy to go with it.
+
+`rx-udp-gro-forwarding` is Tailscale's own guidance for a node that forwards
+traffic. Without it each forwarded UDP packet is handled individually instead of
+in GRO batches, which on a 1.4 GHz A53 is most of the achievable throughput. It
+is a per-interface setting that does not survive a link flap, hence a unit
+rather than a one-off command.
+
+### State lives on `/data`, which is not A/B protected
+
+Node identity and prefs are in `/data/tailscale`, shared by both slots and by
+recovery. That is the feature — a flip or a recovery boot rejoins the tailnet as
+the same node, with approvals intact — and it is the failure mode: **a bad
+tailnet configuration is not fixed by a rollback**, and neither a slot flip nor
+a p7 boot will clear it.
+
+Not *all* of it is there, despite what the drop-in's own comment claims: the
+`ExecStart` repoints `--state=` at `/data`, not `--statedir`, and the upstream
+unit's `CacheDirectory=tailscale` is left in force. So `/var/cache/tailscale`
+stays per-slot. Nothing identity-bearing lives there — it is rebuilt after a
+flip — but "Tailscale state is all on `/data`" is not literally true.
+
+Two consequences worth knowing:
+
+* If p3 fails to mount, the box still boots (it is `nofail`), but the drop-in's
+  `RequiresMountsFor=/data` stops `tailscaled` starting rather than let it write
+  state somewhere that vanishes. `omni-tailscale-routes` `Requires=` it, so that
+  fails too. The symptom is "the box is up but off the tailnet" — reachable only
+  on the LAN, the rescue address, or serial.
+* A **recovery boot re-advertises the LAN and the exit node automatically**,
+  under the same already-approved node identity. The tailnet keeps routing
+  through the box while you repair it. That is why the forwarding sysctl ships in
+  the recovery image too; without it, recovery would keep winning the route
+  election and silently forward nothing. (`ethtool` is *not* in the recovery
+  package list, so the offload unit is skipped there and throughput is lower.)
+
+### Two boxes on the same subnet numbers
+
+Tailscale elects **one** primary per advertised prefix. Two Omnis at different
+sites that both sit on `192.168.86.0/24` — the Google Nest Wifi default, so this
+is not rare — will both advertise it, one will win, and the other site's LAN
+becomes unreachable. Worse, if the winner goes offline, `192.168.86.5` silently
+starts meaning a different machine.
+
+`auto` cannot detect this: each box is correctly describing its own LAN. Pick
+one:
+
+| | |
+|---|---|
+| **4via6** | Tailscale's purpose-built answer. Each site gets a distinct IPv6 prefix mapping onto the same IPv4 range: `tailscale debug via 1 192.168.86.0/24` → `fd7a:115c:a1e0:b1a:0:1:c0a8:5600/120`. No router changes; you address LAN hosts by those v6 addresses. |
+| **Renumber one site** | Cleanest long term, plain IPv4 everywhere, but it means touching a router and re-DHCPing every device at that site. |
+| **Advertise from one box** | `OMNI_TS_ADVERTISE=off` on the other — bearing in mind the per-slot caveat above. Simplest; you keep both exit nodes and give up one site's LAN. |
+
+Exit nodes are unaffected either way — they are selected per client, and two
+boxes offering exit-node service never conflict.

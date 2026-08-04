@@ -546,9 +546,14 @@ the watchdog won, ~15 s means the panic timer won and row 6 is invalid.
 
 ## 9. P6 — is p7 recovery populated and bootable?
 
-Nothing in this repo builds p7 or `apollo-mfc-initrd-image-*`. If p7 is empty,
-recovery rank 2 and rank 3 both evaporate and the only out-of-band path left is
-the serial prompt.
+If p7 is empty, recovery rank 2 and rank 3 both evaporate and the only
+out-of-band path left is the serial prompt.
+
+This repo now builds a Debian recovery image for p7 —
+[`RUNBOOK.md` Appendix D](RUNBOOK.md#appendix-d--the-recovery-slot-p7). It does
+**not** build `apollo-mfc-initrd-image-*`, so `force_run_mfc=1` is still fatal,
+and writing that image over p7 destroys the factory MFC payload for good. Take
+the whole-eMMC backup first; it is the only copy.
 
 ```sh
 dumpe2fs -h /dev/mmcblk0p7
