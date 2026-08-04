@@ -1312,10 +1312,15 @@ reboot** — copy anything you need to `/data` before rebooting.
 | `ethtool` | Not in the 19-package list — so `omni-nic-offload.service` ships but is skipped by its `ConditionPathExists`. Harmless (it is a throughput optimisation), but it means forwarding from recovery is slower than from a slot, and the unit shows "condition failed" rather than success. |
 | initramfs-tools, `vim`, `btop`, `tcpdump`, `iperf3`, `fio`, `nftables` | 450 MiB. `nano` is the editor. |
 
-The *units* are absent; `/usr/sbin/omni-commit.sh` and `omni-rollback.sh` are
-still installed, because the tool set is uniform across all three images. Do not
-run them from p7 — there is nothing armed to commit, and rolling back from a
-partition that is not part of the pair is meaningless.
+The *units* are absent; the scripts are still installed, because the tool set is
+uniform across all three images. They do not all treat p7 the same way, and the
+asymmetry is deliberate:
+
+| From recovery | |
+|---|---|
+| `omni-commit.sh` | **refuses.** Reaching recovery demonstrates nothing about the A/B slots; committing would clear `upgrade_available` for a slot that never booted. |
+| `omni-arm.sh` | allowed, with a warning — the armed slot is only reached if nothing diverts to p7 again. |
+| `omni-rollback.sh` | allowed, with the same warning. This is how you move the pointer from recovery. |
 
 `tools/check-image-invariants.sh --recovery` asserts this contract against a
 real mounted image, so it cannot regress quietly.
@@ -1337,6 +1342,10 @@ finds a stale flag clears it too.
 # fw_printenv force_hard_recovery         # 0
 # reboot                                  # back to mender_boot_part
 ```
+
+On a unit that has never been sent to recovery the variable is simply undefined,
+and `fw_printenv` says `## Error: "force_hard_recovery" not defined` and exits
+non-zero. That is the healthy state, not a fault.
 
 **Do not read `systemctl status` for this.** The service exits `0` on every
 failure path — no `fw_setenv`, unusable `/etc/fw_env.config`, failed unlock,
