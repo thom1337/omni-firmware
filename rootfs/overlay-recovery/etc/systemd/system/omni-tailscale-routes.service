@@ -1,0 +1,25 @@
+[Unit]
+Description=Advertise this Omni as a Tailscale subnet router and exit node
+Documentation=file:/usr/lib/omni/omni-tailscale-routes
+# Needs tailscaled up to talk to, a default route to derive the LAN prefix
+# from, and enrolment to have happened -- omni-tailscale-auth is what consumes
+# an authkey from /data on first boot.
+After=tailscaled.service network-online.target omni-tailscale-auth.service
+Wants=network-online.target
+Requires=tailscaled.service
+ConditionPathExists=/usr/bin/tailscale
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/omni/omni-tailscale-routes
+# Advertising is not required for the box to be useful -- it still has ssh over
+# the tailnet, the LAN and the serial console. A failure here must never block
+# boot, and the script says what happened on the console instead.
+SuccessExitStatus=0 1
+StandardOutput=journal+console
+StandardError=journal+console
+SyslogIdentifier=omni-tailscale-routes
+
+[Install]
+WantedBy=multi-user.target

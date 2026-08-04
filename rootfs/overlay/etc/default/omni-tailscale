@@ -1,0 +1,16 @@
+# Tailscale advertisement policy for this Omni.
+#
+# OMNI_TS_ADVERTISE
+#   auto  (default) derive the LAN prefix from the kernel's connected route on
+#         whichever interface carries the default route. Follows the box if it
+#         moves to another network. The 192.168.77.0/24 rescue address that
+#         every Omni carries is deliberately excluded -- advertising it would
+#         have every box on the tailnet claim the same /24.
+#   off   do not touch advertisements at all. Use this if you configure them by
+#         hand, otherwise the boot-time unit reasserts over your change.
+#   <list> explicit comma-separated prefixes, e.g. 10.0.0.0/24,10.0.1.0/24
+OMNI_TS_ADVERTISE=auto
+
+# Offering to be an exit node is only an OFFER: nothing routes through this box
+# until the offer is approved in the admin console and a client selects it.
+OMNI_TS_EXIT_NODE=yes
