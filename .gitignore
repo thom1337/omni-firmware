@@ -21,12 +21,13 @@ build/*
 # Whole-eMMC images pulled off devices by tools/omni-backup.sh. These are 4 GB
 # each before compression and they contain the U-Boot environment, which holds
 # the board's MAC address and the Tailscale node state on /data -- so they are
-# both far too large and far too sensitive to ever land in a commit.
+# both far too large and far too sensitive to ever land in a commit. It has to
+# live here rather than next to the tool that writes it: the directory is at
+# the repository root, and a .gitignore only covers its own directory and below.
 /omni-backups/
 
-# Python bytecode from the serial-console tools
-__pycache__/
-*.pyc
+# Python bytecode is ignored by tools/.gitignore, next to the only Python in
+# the tree, so that directory stays self-sufficient wherever it is merged.
 
 # Claude Code local overrides (machine-specific: jumphost address for the Omni serial console)
 .claude/settings.local.json
