@@ -1072,7 +1072,9 @@ Read it as:
   in normal operation, and you can see it across a room.
 * **app2 lit on a slot** = it panicked. Otherwise invisible: journald is
   `Storage=volatile` and `/var/log` is a tmpfs, so a panic normally leaves no
-  evidence at all.
+  evidence at all. It is not a latch you can read later, though — `panic=10`
+  and the systemd watchdog put the box through a reboot within about ten
+  seconds, and it comes back with app2 dark. You have to be looking.
 
 Set by udev (`60-omni-leds.rules`) when the LED device appears, so it applies on
 a cold boot and a hotplug alike. `CONFIG_LEDS_TRIGGER_NETDEV` is `=y`, not `=m`:
@@ -1109,20 +1111,24 @@ Read: `fw_printenv | sort`. Write: always inside the `force_ro` dance
 
 ## Appendix C — tool index
 
-Everything below has `--help`, and everything destructive has `--dry-run`.
+Everything below has `--help`, and everything destructive has `--dry-run`, with
+two exceptions: `omni-tailscale-install.sh` and `omni-dd-push.py` have neither.
 **Read the `--dry-run` output before the real run.** Every one of these is
 written to run *on the device* except `omni-backup.sh`, `sync-armbian-board.sh`,
 `validate-dts.sh`, the serial drivers and the `rootfs/` builders, which run on
 the workstation.
 
-**On a Debian device the device-side tools are already there, in `/usr/sbin`** —
-shipped in the image, in both slots and in recovery, so the box can update
-itself with no workstation involved. Do not copy them to `/usr/local/sbin`:
-that path is on the overlay upper and therefore *per-slot*, so the copy
-disappears the moment you boot the other half of the pair. That has already
-cost one silent no-op — a p7 flash that did nothing because `omni-flash.sh`
-lived on the slot we had just booted away from, and a missing script in a
-pipeline is a no-op, not an error.
+**Six of them ship in the image, at `/usr/sbin`:** `omni-lib.sh`,
+`omni-flash.sh`, `omni-arm.sh`, `omni-commit.sh`, `omni-rollback.sh` and
+`omni-preflight.sh` — in both slots *and* in recovery, so the box can update
+itself with no workstation involved. Everything else on this list has to be
+copied over (`scp`, or `tools/omni-push.py` when there is no network).
+
+Do not copy them to `/usr/local/sbin`: that path is on the overlay upper and
+therefore *per-slot*, so the copy disappears the moment you boot the other half
+of the pair. That has already cost one silent no-op — a p7 flash that did
+nothing because `omni-flash.sh` lived on the slot we had just booted away from,
+and a missing script in a pipeline is a no-op, not an error.
 
 | Script | Runs on | What it does | Phase |
 |---|---|---|---|
@@ -1132,9 +1138,9 @@ pipeline is a no-op, not an error.
 | `tools/omni-commit.sh` | device | the "commit" write. Refuses if the running `root=` disagrees with `mender_boot_part`. | 1, 8 |
 | `tools/omni-rollback.sh` | device | deliberate flip to the other slot, mirroring `mender_altbootcmd` exactly | 1, 8 |
 | `tools/omni-flash.sh` | device | install + verify + arm a slot image, with the quiesce/watchdog-off dance and the overlay wipe. `--image -` reads the image from stdin (the only way in on a stock box, whose curl has no TLS); `--slot 7` writes recovery and never arms. | 8, 9 |
-| `tools/omni-set-slot.sh` | device | set the boot pointer directly, for the case where `omni-arm.sh`'s preconditions cannot be met | — |
+| `tools/omni-set-slot.sh` | device (copy it there) | set the boot pointer directly, for the case where `omni-arm.sh`'s preconditions cannot be met | — |
 | `tools/omni-lib.sh` | device | shared helpers for the above; not run directly | — |
-| `tools/omni-tailscale-install.sh` | device | the live-install counterpart to the build-time Tailscale path, for a box that predates it. [Appendix E](#appendix-e--tailscale-exit-node-and-lan-access) | — |
+| `tools/omni-tailscale-install.sh` | device (copy it there) | installs the Tailscale **binaries** and the `/data` state drop-in on a box that predates the image path — and **nothing else**. [Appendix E](#appendix-e--tailscale-exit-node-and-lan-access) | — |
 | `tools/omni-console.py` | workstation | non-interactive serial console driver: run a command, capture the output | 0–9 |
 | `tools/omni-uboot.py` | workstation | drives the `=>` prompt non-interactively | 0, 1 |
 | `tools/omni-push.py` / `tools/omni-dd-push.py` | workstation | stream a file onto the box over 115200 baud serial, when there is no network | 0, 4 |
@@ -1267,11 +1273,17 @@ you get here. But:
 * **You cannot stage the image.** `/data` is 142 MB with ~130 MB free; a slot
   image does not fit. Stream it in.
 
-In recovery, point the environment at the good slot first:
+In recovery, point the environment at the good slot first. `omni-rollback.sh`
+is one of the six tools that ship in the image, and it knows it may be running
+from p7 — it sets the pointer and warns you to check the recovery flags rather
+than refusing:
 
 ```
-# omni-set-slot.sh --slot 2
+# omni-rollback.sh --to 2 --no-reboot
 ```
+
+(`omni-set-slot.sh`, the blunter tool for a broken pointer, is **not** in the
+image — push it with `scp` or `tools/omni-push.py` if you need it.)
 
 Then rebuild the broken one, streaming the image from the workstation:
 
@@ -1435,6 +1447,16 @@ approved in the admin console, which the device cannot do for itself.
 | `omni-tailscale-routes.service` | derives the LAN prefix and calls `tailscale set --advertise-routes=… --advertise-exit-node` |
 | `omni-nic-offload.service` | `ethtool -K … rx-udp-gro-forwarding on rx-gro-list off` |
 | `99-omni-forwarding.conf` | `net.ipv4.ip_forward=1`, `net.ipv6.conf.all.forwarding=1` |
+
+> **`omni-tailscale-install.sh` does not give you any of this.** It installs the
+> `tailscaled`/`tailscale` binaries, the upstream unit, and the drop-in that
+> pins state to `/data` — and stops there. No `omni-tailscale-routes`, no
+> `omni-tailscale-auth`, no `/etc/default/omni-tailscale`, no
+> `omni-nic-offload.service`, and **no `99-omni-forwarding.conf`**. A box
+> live-installed that way can be approved as a subnet router in the admin
+> console and will drop every forwarded packet, silently. It is a bridge for a
+> box that predates the image path, not a substitute for it — reflash to get
+> the rest.
 
 ### It runs once, at boot, and never again
 
