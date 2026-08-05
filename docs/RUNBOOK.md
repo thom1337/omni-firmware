@@ -1082,6 +1082,52 @@ as a module it would be absent from recovery's pruned module tree, and it would
 race udev — writing an unavailable trigger name to sysfs fails *silently* and
 leaves the LED dark.
 
+### The root shell
+
+Root's login shell is **zsh with Oh My Zsh**, in both A/B slots and in recovery.
+Nothing else about the box changed with it, and one thing in particular did not:
+
+> **`/bin/sh` is still dash.** Every script that runs on the device —
+> `omni-flash.sh`, the recovery `/init`, every hook — is `#!/bin/sh` and is
+> written against POSIX. The stock Yocto image had `/bin/sh` symlinked to zsh,
+> whose `sh` emulation provides no `PIPESTATUS`, and `omni-backup.sh`'s
+> verification reads it: on that image **every backup reported itself as
+> truncated**. The build fails if `/bin/sh` ever resolves to zsh again, and
+> `check-image-invariants.sh --only login-shell` asserts it in CI.
+
+The prompt tells you which slot you are on, on every line:
+
+```
+[A p1] omni ~#        slot A, green
+[B p2] omni ~#        slot B, green
+[RECOVERY] omni ~#    p7, bold red
+[slot ?] omni ~#      no root= on /proc/cmdline — you are somewhere odd
+```
+
+It is read once at shell start from `root=` on `/proc/cmdline`, which is where
+the kernel *actually* booted from — not from `mender_boot_part`, which is where
+the *next* boot will go and disagrees whenever a slot was started by hand from
+the `=>` prompt. The MOTD says the same thing at login and then scrolls off the
+top of a 115200 baud console; this does not.
+
+**If zsh is broken you have not lost the box.** `.zshrc` degrades to a plain
+zsh if Oh My Zsh fails to load, and `/etc/passwd` is asserted at build time to
+name a shell that exists — a shell that does not exist is the one way to turn
+the autologin getty into a respawn loop. If it happens anyway: append
+`init=/bin/sh` to `bootargs` at the `=>` prompt
+([rank 1](#rank-1--the-serial--prompt)), or boot recovery, which has its own
+copy.
+
+Not configurable on the device in any lasting way. On a slot, `/root` is in the
+per-slot overlay upper, so an edit to `.zshrc` survives reboots and rollbacks
+but **not** the next flash of that slot; on recovery there is no overlay and the
+edit is permanent. The reviewed copy is `rootfs/zsh/zshrc` — change it there and
+rebuild. Oh My Zsh itself is pinned to a commit in `rootfs/build-rootfs.sh`,
+verified against a digest of the extracted tree (not of the tarball, which
+GitHub regenerates), and pruned to the three plugins actually enabled. Its
+auto-updater is disabled, deliberately: a shell that `git pull`s itself is not
+something firmware should carry.
+
 ---
 
 ## Appendix B — U-Boot environment reference
@@ -1220,8 +1266,11 @@ both solid in normal operation — see the LED table in
 processed the LED `add` events; before that the LEDs sit at their DT defaults,
 which is momentarily indistinguishable from a normal slot boot.
 
-Once you are in: the hostname is `omni-recovery`, the MOTD says so in red, and
-the reliable machine-readable signal is the marker on `/proc/cmdline`:
+Once you are in: the hostname is `omni-recovery`, the MOTD says so in red, the
+prompt is a bold red `[RECOVERY]` on every line you type (see
+[The root shell](#the-root-shell) — it reads `root=` off `/proc/cmdline`, so it
+is right even when you reached p7 by hand), and the reliable machine-readable
+signal is the marker on `/proc/cmdline`:
 
 ```
 # grep -o 'factory_reset\|hard_recovery' /proc/cmdline
@@ -1246,7 +1295,7 @@ it.
 | | |
 |---|---|
 | Size | 450 MiB (`--blocks 115200`) |
-| Packages | 19, from `rootfs/packages-recovery.list` |
+| Packages | 20, from `rootfs/packages-recovery.list` |
 | Modules | 38, from `rootfs/modules-recovery.keep` — what this board actually loads, and nothing else |
 | Root | its own ext4 on p7, mounted directly. **No overlay, no upper partition** |
 | initrd | none (`--no-initramfs`) |

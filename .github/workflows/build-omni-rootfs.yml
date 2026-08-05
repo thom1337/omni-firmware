@@ -213,6 +213,7 @@ jobs:
 
           missing=0
           for f in rootfs/build-in-docker.sh rootfs/build-rootfs.sh rootfs/packages.list \
+                   rootfs/zsh/zshrc rootfs/zsh/omni.zsh-theme \
                    tools/check-image-invariants.sh; do
             if [ ! -f "$f" ]; then
               echo "::error::missing $f"

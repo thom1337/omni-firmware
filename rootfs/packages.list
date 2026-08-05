@@ -183,6 +183,22 @@ jq
 btop
 vim
 
+# The interactive login shell for root, on the serial console and over SSH.
+# Pulls zsh-common as a hard Depends; that is where the ~16 MB is (the
+# completion functions), against zsh's own 4 MB. Recommends are off, so
+# zsh-doc and the pcre/gdbm module libraries are NOT dragged in.
+#
+# Oh My Zsh sits on top and is NOT a package -- there is none, in Debian or
+# anywhere else. It is pinned to a commit in rootfs/build-rootfs.sh, verified
+# by a digest over the extracted tree, pruned to the three plugins actually
+# enabled, and installed to /usr/share/oh-my-zsh by the 27-zsh hook.
+#
+# THIS DOES NOT TOUCH /bin/sh. It stays dash, and 60-finalise fails the build
+# if it ever resolves to zsh. The Yocto image had /bin/sh -> zsh and zsh's sh
+# emulation has no PIPESTATUS, which is how omni-backup.sh came to report every
+# backup as truncated; every script that runs on the device is POSIX sh.
+zsh
+
 # ---------------------------------------------------------------------------
 # DELIBERATELY NOT INSTALLED — build-rootfs.sh asserts these are absent
 # ---------------------------------------------------------------------------

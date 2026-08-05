@@ -1,0 +1,198 @@
+# /root/.zshrc -- Avast Omni.
+#
+# ONE file for both images. It is installed by build-rootfs.sh's 27-zsh hook
+# from rootfs/zsh/zshrc, into the A/B slot image and the recovery image alike,
+# and it branches at RUNTIME on what is actually present rather than being
+# forked into two copies that drift. (Same reasoning as the operator tools,
+# which are appended to the overlay tar from tools/ rather than kept as a
+# second copy under rootfs/overlay/.)
+#
+# EDITING THIS ON THE DEVICE IS TEMPORARY. On an A/B slot, /root lives in the
+# per-slot overlay upper (p5/p6), and omni-flash.sh wipes the target slot's
+# upper before it writes. An edit here survives reboots and survives a rollback;
+# it does NOT survive the next flash of this slot. Change rootfs/zsh/zshrc and
+# rebuild. On recovery (p7) there is no overlay at all -- the edit is written
+# straight to the partition and is permanent, which is worse, not better.
+
+# ---------------------------------------------------------------------------
+# A working prompt BEFORE anything that can fail
+# ---------------------------------------------------------------------------
+# Everything below this line is a convenience. This box is headless, in a
+# closet, and the serial console is the last way in; a .zshrc that dies
+# half-way must still leave a shell you can type into. So the baseline is set
+# first and the fragile parts are guarded individually.
+PROMPT='%m %~ %# '
+
+# ---------------------------------------------------------------------------
+# Oh My Zsh
+# ---------------------------------------------------------------------------
+export ZSH=/usr/share/oh-my-zsh
+
+# Ours, deliberately OUTSIDE $ZSH. The oh-my-zsh tree is replaced wholesale
+# every time the pin in rootfs/build-rootfs.sh moves; anything of ours stored
+# in its custom/ directory would be replaced with it.
+export ZSH_CUSTOM=/usr/share/omni/zsh
+
+# compinit's dump and oh-my-zsh's own cache. NOT $ZSH/cache (the default),
+# because $ZSH is image content and should stay byte-identical to what was
+# built and checksummed. /var/cache is the overlay upper on a slot, so this
+# costs nothing and is discarded when the slot is next flashed.
+export ZSH_CACHE_DIR=/var/cache/oh-my-zsh
+export ZSH_COMPDUMP="$ZSH_CACHE_DIR/zcompdump"
+
+# THE AUTO-UPDATE MUST STAY DISABLED. Left at its default, oh-my-zsh checks
+# for a new version and offers to `git pull` itself on a schedule -- i.e. the
+# shell mutates the firmware from the network. There is no git in either image
+# and $ZSH is not a checkout, so it would fail rather than succeed, but
+# "fails to rewrite the firmware" is not a security property worth relying on.
+# This zstyle is read by $ZSH/tools/check_for_upgrade.sh, which oh-my-zsh.sh
+# sources unconditionally, so it has to be set BEFORE the source line below.
+zstyle ':omz:update' mode disabled
+
+ZSH_THEME=omni
+
+# Kept small on purpose. The build deletes every plugin not named here, which
+# takes plugins/ from 11 MB to 96 KB and the whole tree from 12 MB to 928 KiB
+# (measured). So adding a name here without also changing OMZ_PLUGINS in
+# rootfs/build-rootfs.sh gets you "[oh-my-zsh] plugin 'x' not found" on every
+# login instead of the plugin. The build refuses a name that does not exist
+# upstream, but it cannot tell that this list and that one have diverged.
+#
+#   systemd                    systemctl/journalctl aliases; this box is
+#                              systemd all the way down
+#   history-substring-search   type a fragment, press Up. The single most
+#                              useful thing on a console with no scrollback
+#   extract                    one command for every archive type, which
+#                              matters when the flash path hands you .gz
+#
+# Nothing git-, docker- or sudo-flavoured: none of those exist in either image
+# (see the DELIBERATELY NOT INSTALLED blocks in rootfs/packages*.list).
+plugins=(systemd history-substring-search extract)
+
+# ---------------------------------------------------------------------------
+# Environment the two images do NOT share
+# ---------------------------------------------------------------------------
+# The recovery image has neither less nor vim -- it ships nano and nothing
+# else (rootfs/packages-recovery.list). oh-my-zsh's lib/misc.zsh does
+# `env_default PAGER less` unconditionally, and systemctl/journalctl honour
+# $PAGER; on recovery that is a PAGER that does not exist. env_default only
+# sets an UNSET variable, so exporting the right value here wins.
+if (( $+commands[less] )); then
+  export PAGER=less
+  export LESS='-R -F -X'
+else
+  export PAGER=cat
+  # systemd checks this first and understands "cat" as "do not page".
+  export SYSTEMD_PAGER=cat
+fi
+
+# Single words only. systemd execs $EDITOR directly rather than through a
+# shell, so a value like "busybox vi" would fail for `systemctl edit` in
+# exactly the situation you reached for it. If none of these exist, EDITOR
+# stays unset and systemd falls back to its own list, which is better than a
+# value that cannot be exec'd.
+for _omni_editor in vim nano vi; do
+  if (( $+commands[$_omni_editor] )); then
+    export EDITOR=$_omni_editor VISUAL=$_omni_editor
+    break
+  fi
+done
+unset _omni_editor
+
+# ---------------------------------------------------------------------------
+# Load it
+# ---------------------------------------------------------------------------
+# Guarded. A missing or broken oh-my-zsh must degrade to a plain zsh, not to a
+# console you cannot use: on recovery there is nothing underneath to fall back
+# to, and losing the p7 shell means the eMMC comes out.
+if [[ -r $ZSH/oh-my-zsh.sh ]]; then
+  mkdir -p -- "$ZSH_CACHE_DIR/completions" 2>/dev/null
+  if ! source $ZSH/oh-my-zsh.sh; then
+    print -u2 -- "W: oh-my-zsh failed to load; you have a plain zsh."
+    print -u2 -- "W: the shell is fine. Do not debug this before you fix the box."
+  fi
+else
+  print -u2 -- "W: $ZSH/oh-my-zsh.sh is missing; you have a plain zsh."
+fi
+
+# ---------------------------------------------------------------------------
+# Everything below assumes nothing about oh-my-zsh having loaded
+# ---------------------------------------------------------------------------
+
+# --- history ---------------------------------------------------------------
+# AFTER the source, not before, and that is not a style choice: oh-my-zsh's
+# lib/history.zsh does `[ "$HISTSIZE" -lt 50000 ] && HISTSIZE=50000`, so
+# anything smaller set above this line is silently raised back up. Same for
+# SAVEHIST. A comment above the source explaining a value that does not survive
+# the source is worse than no comment.
+#
+# It already sets, and we keep: EXTENDED_HISTORY (timestamps), SHARE_HISTORY,
+# HIST_VERIFY (a `!!` expansion is shown before it runs -- worth having where
+# the commands are omni-flash.sh invocations), and HIST_IGNORE_SPACE.
+#
+# HIST_IGNORE_SPACE IS THE ONE TO REMEMBER: a command typed with ONE LEADING
+# SPACE never reaches the file. Use it for anything carrying a key --
+# `tailscale up --authkey=tskey-...` is the case that matters here.
+#
+# The file stays in $HOME and is therefore per-slot and disposable. NOT on
+# /data, which is the shared partition and the obvious-looking place: history
+# on this box holds authkeys and image URLs, and /data is exactly what
+# omni-backup.sh pulls off the device.
+HISTFILE=~/.zsh_history
+
+# The two oh-my-zsh does not set. HIST_IGNORE_DUPS (which it does set) only
+# collapses CONSECUTIVE repeats; on a console where you retype the same long
+# flash command after each failure, the all-dups form is what you actually
+# wanted.
+setopt HIST_IGNORE_ALL_DUPS HIST_REDUCE_BLANKS
+
+# history-substring-search binds these itself when it loads, but only for the
+# terminfo capabilities the terminal reports. A raw serial line often reports
+# nothing useful, so bind the two sequences a vt100/vt220 emulator actually
+# sends. Harmless if the widget is absent -- bindkey on an unknown widget is a
+# warning, not a failure, and this is the one keybinding people notice.
+if (( $+widgets[history-substring-search-up] )); then
+  bindkey '^[[A' history-substring-search-up
+  bindkey '^[[B' history-substring-search-down
+  bindkey '^[OA' history-substring-search-up
+  bindkey '^[OB' history-substring-search-down
+fi
+
+# The operator tools live in /usr/sbin and root's PATH already has it, but a
+# `su` from somewhere odd may not. Cheap to be certain.
+[[ :$PATH: == *:/usr/sbin:* ]] || export PATH=/usr/sbin:$PATH
+
+# Aliases. Nothing here shadows an omni-* tool: those are commands you should
+# type in full, because `omni-flash.sh` and `omni-rollback.sh` are not things
+# to fire off with a two-letter alias.
+alias ll='ls -alFh'
+alias la='ls -A'
+alias df='df -h'
+alias free='free -m'
+alias jctl='journalctl'
+alias jf='journalctl -f'
+alias jb='journalctl -b'
+# NO `alias dmesg='dmesg -T'`, deliberately. This board has no battery-backed
+# RTC -- that is why systemd-timesyncd is installed -- so until the network is
+# up and the clock is set, -T renders every line as a confident absolute
+# timestamp derived from a bogus boot time. Seconds-since-boot is ugly and
+# true; wrong wall-clock times on early-boot output are the thing you are
+# usually trying to read. Type -T yourself once you know the clock is good.
+
+# The A/B state, in one word, without remembering three variable names.
+# fw_printenv reads the single 8 KB environment at offset 0 of mmcblk0boot0.
+if (( $+commands[fw_printenv] )); then
+  alias omni-state='fw_printenv mender_boot_part upgrade_available bootcount bootlimit 2>&1'
+fi
+
+# Spelling correction stays OFF. It is off by default and oh-my-zsh does not
+# turn it on, so this is belt and braces against a future pin bump -- but it is
+# the right belt: CORRECT offers to replace a command name you mistyped, and
+# every command on this box runs as root and several of them rewrite a
+# partition. "Did you mean omni-rollback.sh? [nyae]" answered reflexively at
+# 2 a.m. is a failure mode worth not having.
+unsetopt CORRECT CORRECT_ALL 2>/dev/null
+
+# Locally-added settings, if anyone drops one in. Same caveat as this file:
+# on a slot it is in the overlay upper and dies with the next flash.
+[[ -r ~/.zshrc.local ]] && source ~/.zshrc.local

@@ -257,7 +257,7 @@ fi
 
 CHECK_IDS="armbian-install armbian-packages serial-autologin fstab-cgroup \
 omni-boot-defaults boot-real-files flatten-hooks machine-id initramfs \
-network-naming sshd modprobe-blacklist data-symlinks ext4-features"
+network-naming sshd modprobe-blacklist data-symlinks login-shell ext4-features"
 
 if [ "$DO_LIST" -eq 1 ]; then
 	printf '%s\n' $CHECK_IDS
@@ -1330,6 +1330,72 @@ check_device_tools() {
 	[ "$missing" = 1 ] || ok "device tools present and executable in $d (self-updating image)"
 }
 
+check_login_shell() {
+	# Two invariants, one about locking yourself out and one about a class of
+	# bug this project has already paid for once.
+	#
+	# 1. root's login shell must EXIST in the image. The serial getty runs
+	#    `agetty --autologin root`, which is `login -f root`, which execs the
+	#    shell named in /etc/passwd. If that path is not there, login fails,
+	#    Restart=always respawns the getty, and the console of a headless box in
+	#    a closet is an infinite loop instead of a prompt. On the recovery slot
+	#    there is nothing underneath to fall back to.
+	#
+	# 2. /bin/sh must NOT be zsh. The Yocto image this replaces had exactly
+	#    that. zsh's sh emulation has no PIPESTATUS, and omni-backup.sh's
+	#    verification depended on it -- so every backup that image ever took
+	#    reported itself as truncated. Every device-side script is '#!/bin/sh'
+	#    and is written against POSIX. Installing zsh as root's INTERACTIVE
+	#    shell is fine and is what this image does; changing /bin/sh is not.
+	# usrmerge. With a DIRECTORY rootfs the kernel walks /bin -> usr/bin for us;
+	# with a TARBALL the index holds literal member names, so /bin/zsh is simply
+	# not in it and r_type would report a correct image as missing its shell.
+	# Resolve by hand rather than reporting an invented failure.
+	_merged() { # $1 = path -> the path that actually exists in this rootfs
+		if [ "$(r_type "$1")" != missing ]; then printf '%s' "$1"; return 0; fi
+		case "$1" in
+		/bin/*|/sbin/*|/lib/*)
+			if [ "$(r_type "/usr$1")" != missing ]; then printf '%s' "/usr$1"; return 0; fi ;;
+		esac
+		printf '%s' "$1"
+	}
+
+	local shell shell_p sh_p sh_t
+	shell=$(r_cat /etc/passwd 2>/dev/null | awk -F: '$1 == "root" { print $7; exit }')
+	shell_p=$(_merged "$shell")
+	if [ -z "$shell" ]; then
+		fail "/etc/passwd has no root entry, or no shell field for root" \
+			"login -f root has nothing to exec; the serial console respawns forever instead of giving a prompt."
+	elif [ "$(r_type "$shell_p")" = missing ]; then
+		fail "root's login shell is '$shell', which does not exist in the image" \
+			"agetty --autologin root runs login -f root, which execs this path. A missing shell means the getty respawns forever and the box has no console -- and no network login either, if sshd is not up."
+	elif ! r_exec "$shell_p"; then
+		fail "root's login shell '$shell' is not executable (mode: $(r_mode "$shell_p"))" \
+			"login execs it directly; a non-executable shell fails exactly like a missing one."
+	else
+		ok "root's login shell $shell exists and is executable"
+	fi
+
+	sh_p=$(_merged /bin/sh)
+	sh_t=$(r_type "$sh_p")
+	if [ "$sh_t" = missing ]; then
+		fail "/bin/sh is missing" \
+			"Every script on the device -- the recovery /init included -- has a '#!/bin/sh' shebang."
+	else
+		# r_link is the symlink target when /bin/sh is a link; a real file has
+		# no target, which is fine and is not zsh either way.
+		local tgt
+		tgt=$(r_link "$sh_p" 2>/dev/null || printf '')
+		case "$tgt" in
+		*zsh*)
+			fail "/bin/sh points at '$tgt'" \
+				"zsh's sh emulation provides no PIPESTATUS. omni-backup.sh's archive verification reads it, and on the Yocto image -- which had this exact symlink -- that made every backup report itself as truncated. The device tools are POSIX sh." ;;
+		*)
+			ok "/bin/sh is not zsh${tgt:+ (-> $tgt)}" ;;
+		esac
+	fi
+}
+
 check_ip_forwarding() {
 	# If the image can advertise Tailscale subnet routes or an exit node, it
 	# must also be able to forward. Those advertisements live in
@@ -1439,6 +1505,7 @@ if [ -n "$ROOTFS" ]; then
 	wanted data-symlinks && check_data_symlinks
 	wanted ip-forwarding && check_ip_forwarding
 	wanted device-tools && check_device_tools
+	wanted login-shell && check_login_shell
 else
 	skip "rootfs checks" "no rootfs directory or tarball given"
 fi

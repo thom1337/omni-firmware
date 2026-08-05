@@ -13,6 +13,13 @@
 #   3. fetch an image                           (curl, ca-certificates)
 #   4. write and verify a slot                  (coreutils, gzip, e2fsprogs)
 #   5. move the boot pointer                    (libubootenv-tool)
+#
+# ONE DELIBERATE EXCEPTION to "nothing whatsoever else": zsh, below. It is a
+# comfort package by the rule this list is written to, and it is here anyway
+# because the argument for it is strongest exactly where the rule is strictest
+# -- see its entry. The cost was measured, not estimated, and it is recorded
+# there. Every OTHER comfort package stays out; the exception is not a new
+# policy.
 
 systemd-sysv
 udev
@@ -47,6 +54,48 @@ mmc-utils
 # while the box is down.
 nano
 
+# The interactive shell, and the exception noted at the top of this file.
+#
+# COST. Free space is measured, from the recovery image built 2026-08-03
+# (rootfs/out/omni-recovery.ext4: 21,477 free blocks x 4096). The package sizes
+# are Debian trixie/arm64 Installed-Size, i.e. BEFORE the build's --slim pass
+# strips /usr/share/{doc,man,info,locale} -- so they are an upper bound and the
+# free-space figure is a lower bound:
+#
+#   free before      21,477 blocks x 4096 = 83.9 MiB
+#   zsh                                     4.0 MiB
+#   zsh-common (hard Depends)              16.0 MiB   <- almost all of it
+#   oh-my-zsh, pruned to 3 plugins          0.9 MiB   (measured, not estimated)
+#   free after                            >=63 MiB
+#
+# Recommends are off, so zsh-doc and the pcre/gdbm module libraries stay out.
+# The 11 MB of upstream plugins are deleted at build time, which is what makes
+# oh-my-zsh cost 0.9 MiB here instead of 12.
+#
+# WHY IT EARNS ITS BYTES ON THE PARTITION THAT ALLOWS NOTHING:
+#
+#   The prompt says which slot you are on. The theme reads root= out of
+#   /proc/cmdline once at shell start and prints a red [RECOVERY] on every
+#   line. /etc/update-motd.d/00-omni-recovery already says so at login, and
+#   then it scrolls off the top of a 115200 baud console and you spend the
+#   next hour on a slot with no overlay, wondering why your changes keep
+#   disappearing. Recovery is used rarely, under pressure, by someone who was
+#   doing something else ten minutes ago -- the conditions under which
+#   "which box am I on" errors actually happen.
+#
+#   Up-arrow history search. Recovery sessions are a handful of long
+#   omni-flash.sh command lines with a URL, a sha256 and a byte count in them,
+#   retyped after each failure. On a serial line with no scrollback and no
+#   mouse, recalling one by typing three characters is not a luxury.
+#
+# WHAT IT DOES NOT DO: /bin/sh stays dash here too. The recovery /init is
+# '#!/bin/sh', omni-flash.sh is '#!/bin/sh', and the build fails if /bin/sh
+# ever resolves to zsh. Only root's INTERACTIVE login shell changes.
+#
+# If p7 ever runs out of room, this is the first thing to drop -- build with
+# --no-zsh, which leaves root on the Debian default and changes nothing else.
+zsh
+
 # ---------------------------------------------------------------------------
 # DELIBERATELY NOT INSTALLED (present in the A/B image, omitted here)
 # ---------------------------------------------------------------------------
@@ -54,7 +103,12 @@ nano
 #                     init=/init -- there is no initrd in this boot path at all,
 #                     so building one wastes ~30 MiB and a lot of build time.
 #                     This is the single biggest saving in the list.
-#   vim, btop, jq     comfort, not repair.
+#   vim, btop, jq     comfort, not repair. (zsh IS installed and is also a
+#                     comfort package; see its entry above for why that one
+#                     exception was made and what it cost. These three were
+#                     re-examined at the same time and still do not earn it:
+#                     nano covers editing, /proc covers what btop shows, and
+#                     nothing in the recovery path parses JSON.)
 #   tcpdump, iperf3   diagnosis of a WORKING box; this slot exists for a broken
 #   fio               one, and you can install them at runtime if you must.
 #   wireguard-tools   the recovery path out is ssh or tailscale, not a tunnel

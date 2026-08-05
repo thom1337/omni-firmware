@@ -56,10 +56,52 @@ TAILSCALE=1
 TAILSCALE_VERSION="1.98.10"
 TAILSCALE_SHA256="d74a84e07cb1948d9f09a23ae161417c6127e562949773705c95d0762be2809d"
 TAILSCALE_URL_BASE="https://pkgs.tailscale.com/stable"
+
+# --- zsh + Oh My Zsh --------------------------------------------------------
+# The interactive shell for root, on the serial console and over SSH. zsh comes
+# from Debian; Oh My Zsh is not packaged anywhere, so it is pinned to a COMMIT
+# and fetched as GitHub's tarball for that commit, in the same shape as the
+# Tailscale pin above and for the same reason.
+#
+# WHAT IS VERIFIED, AND WHY IT IS NOT THE TARBALL'S DIGEST. codeload.github.com
+# generates these archives on demand; the bytes are not contractually stable and
+# GitHub has changed its gzip settings before, invalidating every pinned digest
+# in the world overnight. So the pin is over the EXTRACTED TREE -- every path,
+# type, symlink target and file content -- which is stable no matter how the
+# archive was compressed on the day. Recompute after a bump with:
+#
+#   rootfs/build-rootfs.sh --omz-repin <commit>
+#
+# NOT VERIFIED BY THIS: that the commit itself is trustworthy. A tree digest
+# proves you got the same thing twice, not that the thing is good. Read the
+# upstream diff when you bump the pin; it is a shell that runs as root at every
+# login on every device.
+ZSH_SHELL=1
+OMZ_COMMIT="ad586ffecaaeb695cc73ced4d643c6727d47f535"
+OMZ_TREE_SHA256="73ebf670f169ccea4b278c80633060aa6eb1de716c897b0a47df7949195b2d42"
+OMZ_URL_BASE="https://codeload.github.com/ohmyzsh/ohmyzsh/tar.gz"
+OMZ_TGZ_IN=""            # --omz-tar: use a local archive, never touch the network
+
+# Oh My Zsh ships ~300 plugins and sources only the ones named in .zshrc.
+# Shipping all of them costs 11 MB in an image with 84 MiB of headroom on p7,
+# to use three. The build keeps exactly this list and deletes the rest, then
+# asserts that nothing left behind references a path it just removed.
+#
+# MUST MATCH the plugins=(...) line in rootfs/zsh/zshrc. A name there and not
+# here produces "[oh-my-zsh] plugin 'x' not found" on every login.
+OMZ_PLUGINS="systemd history-substring-search extract"
+OMZ_ALL_PLUGINS=0
+OMZ_REPIN=""             # --omz-repin: print a commit's tree digest and exit
+
 BLOCKS_EXPLICIT=0
 BLOCKS_FROM=""
 
 OUT_DIR="${SCRIPT_DIR}/out"
+# /root/.zshrc and the prompt theme. ONE copy for both images, appended to the
+# overlay tar at build time in the same way the operator tools are -- a second
+# copy under overlay-recovery/ would drift, and the one that drifts is the one
+# you are looking at while the box is down.
+ZSH_DIR="${SCRIPT_DIR}/zsh"
 OVERLAY_DIR="${SCRIPT_DIR}/overlay"
 USE_OVERLAY=1
 PKG_FILE="${SCRIPT_DIR}/packages.list"
@@ -228,6 +270,30 @@ IMAGE CONTENT
                         verbatim from the device (pre-flight P4), never typed from the
                         U-Boot patches. Test images only.
 
+SHELL
+  --no-zsh              do not install zsh or Oh My Zsh, and leave root's login
+                        shell at the Debian default (/bin/bash). /bin/sh is dash
+                        either way -- see the note below.
+  --omz-commit SHA      Oh My Zsh commit to pin. Default ${OMZ_COMMIT}
+  --omz-tree-sha256 H   expected digest of the EXTRACTED tree for that commit.
+                        Bump both together; the build refuses if they disagree.
+  --omz-tar FILE        install from a local ohmyzsh tarball instead of fetching.
+                        Still tree-verified. For builds with no network.
+  --omz-plugins "A B"   plugins to keep; everything else is deleted from the
+                        image. Default "${OMZ_PLUGINS}". Must match the
+                        plugins=(...) line in rootfs/zsh/zshrc.
+  --omz-all-plugins     keep all ~300 upstream plugins (+11 MB). On the 450 MiB
+                        recovery image that is an eighth of the free space.
+  --omz-repin SHA       fetch that commit, print the tree digest, exit. Use it to
+                        produce the value for --omz-tree-sha256. Builds nothing.
+
+  /bin/sh IS NOT TOUCHED, by any of these. It stays dash. The Yocto image this
+  replaces had /bin/sh symlinked to zsh, and zsh's sh emulation has no
+  PIPESTATUS -- which is precisely how omni-backup.sh came to report every
+  backup as truncated for as long as it did. Everything on the device with a
+  '#!/bin/sh' shebang is written against POSIX and must keep getting POSIX.
+  The build asserts this.
+
 MISC
   --out DIR             default ${OUT_DIR}
   --work DIR            scratch directory (default: mktemp under \$TMPDIR)
@@ -272,6 +338,13 @@ while [ $# -gt 0 ]; do
 	--no-tailscale)     TAILSCALE=0; shift;;
 	--tailscale-version) TAILSCALE_VERSION=${2:?--tailscale-version needs a value}; shift 2;;
 	--tailscale-sha256) TAILSCALE_SHA256=${2:?--tailscale-sha256 needs a value}; shift 2;;
+	--no-zsh)           ZSH_SHELL=0; shift;;
+	--omz-commit)       OMZ_COMMIT=${2:?--omz-commit needs a value}; shift 2;;
+	--omz-tree-sha256)  OMZ_TREE_SHA256=${2:?--omz-tree-sha256 needs a value}; shift 2;;
+	--omz-tar)          OMZ_TGZ_IN=${2:?--omz-tar needs a value}; shift 2;;
+	--omz-plugins)      OMZ_PLUGINS=${2:?--omz-plugins needs a value}; shift 2;;
+	--omz-all-plugins)  OMZ_ALL_PLUGINS=1; shift;;
+	--omz-repin)        OMZ_REPIN=${2:?--omz-repin needs a commit sha}; shift 2;;
 	--blocks)           BLOCKS=${2:?--blocks needs a value}; BLOCKS_EXPLICIT=1; shift 2;;
 	--size-mib)         BLOCKS=$(( ${2:?--size-mib needs a value} * 1048576 / BLOCK_SIZE )); BLOCKS_EXPLICIT=1; shift 2;;
 	--blocks-from)      BLOCKS_FROM=${2:?--blocks-from needs a value}; BLOCKS_EXPLICIT=1; shift 2;;
@@ -308,11 +381,90 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
+# ------------------------------------------------------------------- Oh My Zsh helpers
+# Digest of an EXTRACTED tree: every path with its type and symlink target, plus
+# the sha256 of every regular file's contents. NOT the tarball's own digest --
+# codeload.github.com regenerates these archives on demand and their bytes are
+# not stable across GitHub's own compression changes, whereas the tree is.
+#
+# Modes are deliberately excluded. GNU tar applies the umask when extracting as
+# a non-root user, so a mode-sensitive digest would depend on the umask of
+# whoever ran the build. Nothing in Oh My Zsh needs a mode we do not set
+# ourselves in the install hook.
+omz_tree_digest() {
+	local d=$1
+	( cd -- "$d" && {
+		find . -mindepth 1 -printf '%y %P %l\n'
+		find . -type f -exec sha256sum {} +
+	  } | LC_ALL=C sort | sha256sum | cut -d' ' -f1 )
+}
+
+# Fetch (or copy) the archive for a commit and extract it. Prints the path of
+# the extracted top-level directory on stdout; everything else goes to stderr so
+# this is safe to capture.
+omz_extract() {
+	local commit=$1 dest=$2 tgz top
+	tgz="${dest}/ohmyzsh-${commit}.tar.gz"
+	mkdir -p -- "$dest"
+	if [ -n "$OMZ_TGZ_IN" ]; then
+		[ -s "$OMZ_TGZ_IN" ] || die "--omz-tar: not readable or empty: $OMZ_TGZ_IN"
+		info "using local Oh My Zsh archive ${OMZ_TGZ_IN}"
+		cp -- "$OMZ_TGZ_IN" "$tgz"
+	else
+		info "fetching Oh My Zsh ${commit} from ${OMZ_URL_BASE}/${commit}"
+		curl -fL --retry 3 --retry-delay 5 --connect-timeout 20 \
+			-o "$tgz" "${OMZ_URL_BASE}/${commit}" \
+			|| die "could not download Oh My Zsh ${commit}"
+	fi
+	mkdir -p -- "${dest}/x"
+	tar -C "${dest}/x" -xzf "$tgz" || die "Oh My Zsh archive did not extract"
+	# One directory, named after the commit. Anything else means the archive is
+	# not what it claims to be, and we are about to hash it and call it verified.
+	top=$(find "${dest}/x" -mindepth 1 -maxdepth 1 -print)
+	[ "$(printf '%s\n' "$top" | grep -c .)" = 1 ] || \
+		die "Oh My Zsh archive has an unexpected layout (expected exactly one top-level directory)"
+	[ -d "$top" ] || die "Oh My Zsh archive top-level entry is not a directory: $top"
+	printf '%s\n' "$top"
+}
+
+# --omz-repin: fetch, hash, print, stop. Builds nothing, writes nothing outside
+# a temp directory. This is the only supported way to produce the value for
+# --omz-tree-sha256, because eyeballing a digest out of a build log invites
+# pinning whatever you happened to download rather than what you reviewed.
+if [ -n "$OMZ_REPIN" ]; then
+	need curl tar sha256sum find sort
+	repin_tmp=$(mktemp -d "${TMPDIR:-/tmp}/omni-omz-repin.XXXXXX") || die "mktemp failed"
+	trap 'rm -rf -- "$repin_tmp"' EXIT
+	repin_top=$(omz_extract "$OMZ_REPIN" "$repin_tmp")
+	printf '\n'
+	printf 'OMZ_COMMIT="%s"\n' "$OMZ_REPIN"
+	printf 'OMZ_TREE_SHA256="%s"\n' "$(omz_tree_digest "$repin_top")"
+	printf '\n'
+	printf 'Paste both lines into rootfs/build-rootfs.sh. Read the upstream diff\n' >&2
+	printf 'first: this is a shell that runs as root at every login on every device.\n' >&2
+	exit 0
+fi
+
 # --------------------------------------------------------------------------- validation
 need mmdebstrap tar gzip sha256sum sed grep find awk sort mke2fs dumpe2fs e2fsck truncate
 # Only required when Tailscale is being fetched; checked here so the build stops
 # in its precondition phase rather than after mmdebstrap has done its work.
 if [ "$TAILSCALE" = 1 ]; then need curl; fi
+# Same, for Oh My Zsh. --omz-tar skips the download, so curl is only required
+# when there is actually something to fetch.
+if [ "$ZSH_SHELL" = 1 ] && [ -z "$OMZ_TGZ_IN" ]; then need curl; fi
+if [ "$ZSH_SHELL" = 1 ]; then
+	[ -r "${ZSH_DIR}/zshrc" ] || die "zsh requested but ${ZSH_DIR}/zshrc is missing"
+	[ -r "${ZSH_DIR}/omni.zsh-theme" ] || die "zsh requested but ${ZSH_DIR}/omni.zsh-theme is missing"
+	# The plugin list is deleted down to this set, so a name that does not exist
+	# upstream becomes "[oh-my-zsh] plugin 'x' not found" on every login of every
+	# device -- a per-login error message shipped in firmware. Cheap to catch the
+	# obvious form of it here; the real existence check is in the prune step,
+	# which has the tree in front of it.
+	case "$OMZ_PLUGINS" in
+	*[!A-Za-z0-9_.\ -]*) die "--omz-plugins: names must be plugin directory names separated by spaces: $OMZ_PLUGINS";;
+	esac
+fi
 
 case "$PACK_METHOD" in auto|root|sudo|unshare) ;; *) die "--pack-method must be auto|root|sudo|unshare";; esac
 
@@ -752,6 +904,142 @@ echo "I: 25-tailscale: ok"
 HOOK25
 chmod +x "${HOOK_DIR}/25-tailscale.sh"
 
+# 27 — zsh + Oh My Zsh, and root's login shell.
+#
+# Runs after 10-overlay so it can sit on top of whatever the overlay shipped,
+# and after 20-kernel so the zsh package (which came from the package list, not
+# from here) is definitely unpacked and its postinst has run.
+#
+# THE FAILURE MODE THIS HOOK EXISTS TO PREVENT: `login -f root` execs the shell
+# named in /etc/passwd. If that path does not exist, login fails, agetty
+# respawns, and the serial console is a loop instead of a prompt -- on a
+# headless box, in a closet, where the console is the last way in. Every step
+# below is therefore checked, and the shell is only switched once the binary is
+# confirmed present.
+cat >"${HOOK_DIR}/27-zsh.sh" <<'HOOK27'
+#!/bin/sh
+set -eu
+chroot_dir=$1
+
+# --no-zsh, or a dry run: leave root on the Debian default and say so.
+if [ -z "${OMNI_OMZ_TAR:-}" ] && [ "${OMNI_ZSH:-0}" != 1 ]; then
+	echo "I: 27-zsh: not requested, skipping"
+	exit 0
+fi
+
+# The binary comes from the package list (zsh -> zsh-common), never from here.
+# If it is missing, the list was edited without this hook being turned off, and
+# switching root's shell now would produce exactly the unbootable console
+# described above.
+if [ ! -x "${chroot_dir}/bin/zsh" ] && [ ! -x "${chroot_dir}/usr/bin/zsh" ]; then
+	echo "E: 27-zsh: no zsh in the image. Add 'zsh' to the package list, or build with --no-zsh." >&2
+	echo "E: 27-zsh: refusing to point root's login shell at a binary that is not there." >&2
+	exit 1
+fi
+
+# Oh My Zsh, already fetched, tree-verified and pruned on the build host.
+if [ -n "${OMNI_OMZ_TAR:-}" ]; then
+	[ -s "$OMNI_OMZ_TAR" ] || { echo "E: 27-zsh: ${OMNI_OMZ_TAR} missing" >&2; exit 1; }
+	rm -rf "${chroot_dir}/usr/share/oh-my-zsh"
+	mkdir -p "${chroot_dir}/usr/share/oh-my-zsh"
+	tar -C "${chroot_dir}/usr/share/oh-my-zsh" --numeric-owner -xf "$OMNI_OMZ_TAR"
+	# Uniform and root-owned. compinit's compaudit refuses to load completions
+	# from a directory that is group- or world-writable, and its complaint is a
+	# wall of text on every login rather than a clean failure.
+	find "${chroot_dir}/usr/share/oh-my-zsh" -type d -exec chmod 0755 {} +
+	find "${chroot_dir}/usr/share/oh-my-zsh" -type f -exec chmod 0644 {} +
+	[ -r "${chroot_dir}/usr/share/oh-my-zsh/oh-my-zsh.sh" ] || \
+		{ echo "E: 27-zsh: oh-my-zsh.sh not present after unpack" >&2; exit 1; }
+	echo "I: 27-zsh: oh-my-zsh installed ($(find "${chroot_dir}/usr/share/oh-my-zsh" -type f | wc -l) files)"
+fi
+
+# Ours: the prompt theme, outside the oh-my-zsh tree so a pin bump cannot
+# delete it. ZSH_CUSTOM in .zshrc points here.
+#
+# The directory modes are set EXPLICITLY, not left to `install -D`. install
+# creates missing parents at 0755 masked by the caller's umask, so a builder
+# running umask 002 would produce group-writable directories -- and $ZSH_CUSTOM
+# is on compinit's fpath, so compaudit would then refuse to load completions
+# and print fifteen lines about it on every login, on a 115200 baud console.
+# That failure depends on the umask of whoever ran the build, which is the worst
+# kind of thing to leave to chance.
+if [ -n "${OMNI_ZSH_THEME_SRC:-}" ]; then
+	mkdir -p "${chroot_dir}/usr/share/omni/zsh/themes"
+	chmod 0755 "${chroot_dir}/usr/share/omni" \
+	           "${chroot_dir}/usr/share/omni/zsh" \
+	           "${chroot_dir}/usr/share/omni/zsh/themes"
+	install -m 0644 "$OMNI_ZSH_THEME_SRC" \
+		"${chroot_dir}/usr/share/omni/zsh/themes/omni.zsh-theme"
+	echo "I: 27-zsh: installed /usr/share/omni/zsh/themes/omni.zsh-theme"
+fi
+
+# /root/.zshrc. Overwrites whatever was there: this file is image content, and
+# the one in rootfs/zsh/ is the only copy that gets reviewed.
+if [ -n "${OMNI_ZSHRC_SRC:-}" ]; then
+	install -D -m 0644 "$OMNI_ZSHRC_SRC" "${chroot_dir}/root/.zshrc"
+	echo "I: 27-zsh: installed /root/.zshrc"
+fi
+
+# compinit's dump lands here. Created now so the first login does not have to,
+# and so it is a real directory in the image rather than something .zshrc makes
+# on a filesystem that might be read-only at the time.
+mkdir -p "${chroot_dir}/var/cache/oh-my-zsh/completions"
+chmod 0755 "${chroot_dir}/var/cache/oh-my-zsh" "${chroot_dir}/var/cache/oh-my-zsh/completions"
+
+chroot "$chroot_dir" /bin/sh -eu <<'IN_CHROOT'
+zsh_path=$(command -v zsh || true)
+[ -n "$zsh_path" ] || { echo "E: 27-zsh: zsh not on PATH inside the chroot" >&2; exit 1; }
+
+# usermod, not chsh: chsh validates against /etc/shells and its behaviour when
+# the entry is absent differs between shadow versions. usermod just writes the
+# field, and the assertion below is what actually guarantees the result.
+usermod -s "$zsh_path" root
+echo "I: 27-zsh: root login shell -> ${zsh_path}"
+
+# /etc/shells for completeness -- sshd does not consult it, but `chsh` and some
+# FTP/PAM paths do, and an absent entry is the kind of thing that bites once.
+if [ -f /etc/shells ] && ! grep -qx "$zsh_path" /etc/shells; then
+	printf '%s\n' "$zsh_path" >> /etc/shells
+fi
+
+# --- assertions ---------------------------------------------------------
+fail=0
+
+# The console-killer. root's shell field must name something executable.
+shell=$(getent passwd root | cut -d: -f7)
+if [ -z "$shell" ] || [ ! -x "$shell" ]; then
+	echo "E: 27-zsh: root's login shell is '${shell:-<empty>}', which is not executable." >&2
+	echo "E: 27-zsh: login -f root would fail and the serial getty would respawn forever." >&2
+	fail=1
+else
+	echo "I: 27-zsh: root shell ${shell} ok"
+fi
+
+# Nothing on compinit's fpath may be group- or other-writable. When it is,
+# compaudit refuses to load completions and prints fifteen lines saying so --
+# on every login, on a serial console, in an image that is otherwise fine.
+# It depends on the build host's umask, so it must be checked, not assumed.
+for d in /usr/share/oh-my-zsh /usr/share/omni/zsh; do
+	[ -d "$d" ] || continue
+	bad=$(find "$d" -type d -perm /022 -print 2>/dev/null | head -n5)
+	if [ -n "$bad" ]; then
+		echo "E: 27-zsh: group- or other-writable directories under ${d}:" >&2
+		printf 'E: 27-zsh:   %s\n' $bad >&2
+		echo "E: 27-zsh: compaudit will disable completions and say so at every login." >&2
+		fail=1
+	fi
+done
+
+# NOTE: the "/bin/sh must not be zsh" invariant is asserted in 60-finalise,
+# not here. It has to hold whether or not this hook ran -- including under
+# --no-zsh -- so it belongs with the rest of the image contract.
+
+[ "$fail" = 0 ] || exit 1
+IN_CHROOT
+echo "I: 27-zsh: ok"
+HOOK27
+chmod +x "${HOOK_DIR}/27-zsh.sh"
+
 cat >"${HOOK_DIR}/30-systemd.sh" <<'HOOK30'
 #!/bin/sh
 set -eu
@@ -1183,6 +1471,35 @@ fi
 [ -d /data ] || mkdir -m 0755 /data
 [ -d /boot ] || { echo "E: 60-finalise: no /boot" >&2; fail=1; }
 
+# --- shells. Both of these are unconditional: they must hold with or without
+# --no-zsh, which is why they are here rather than in the 27-zsh hook.
+#
+# 1. /bin/sh MUST NOT BE ZSH. The Yocto image this replaces had /bin/sh
+#    symlinked to zsh, and zsh's sh emulation provides no PIPESTATUS -- which is
+#    exactly how omni-backup.sh came to report every backup as truncated for as
+#    long as it did. Every script that runs on the device has a '#!/bin/sh'
+#    shebang and is written against POSIX. Installing zsh as an interactive
+#    login shell does not change this and must never be allowed to.
+sh_target=$(readlink -f /bin/sh 2>/dev/null || echo /bin/sh)
+case "$sh_target" in
+*zsh*)
+	echo "E: 60-finalise: /bin/sh resolves to ${sh_target}." >&2
+	echo "E: 60-finalise: the device tools are POSIX sh and use PIPESTATUS, which zsh's sh" >&2
+	echo "E: 60-finalise: emulation does not provide. /bin/sh must stay dash." >&2
+	fail=1 ;;
+esac
+
+# 2. root's login shell must exist and be executable. `login -f root` -- which
+#    is what the serial autologin getty runs -- execs whatever is in this field.
+#    A path that is not there means login fails, agetty respawns, and the
+#    console of a headless box is a loop instead of a prompt.
+root_shell=$(getent passwd root | cut -d: -f7)
+if [ -n "$root_shell" ] && [ ! -x "$root_shell" ]; then
+	echo "E: 60-finalise: root's login shell '${root_shell}' is not executable in this image." >&2
+	echo "E: 60-finalise: the serial console would respawn forever instead of giving a prompt." >&2
+	fail=1
+fi
+
 [ "$fail" = 0 ] || exit 1
 
 # Space reclamation, carefully scoped. Two things that look tidy here are NOT:
@@ -1250,6 +1567,112 @@ or the download is not what it claims to be. Refusing to build."
 	fi
 fi
 
+# Fetch, verify and PRUNE Oh My Zsh, all on the build host. Same rule as
+# Tailscale above: nothing unverified is ever inside the chroot, so a bad
+# digest fails the build before a byte is installed. The pruning happens here
+# too, so what goes into the image is exactly what the hook untars -- the hook
+# does not get to make decisions about content.
+OMZ_TAR=""
+if [ "$ZSH_SHELL" = 1 ]; then
+	if [ "$DRY_RUN" = 1 ]; then
+		info "DRY RUN: would fetch Oh My Zsh ${OMZ_COMMIT} and verify tree digest"
+		info "DRY RUN:   expecting ${OMZ_TREE_SHA256}"
+		# Be honest about what a dry run does NOT cover. Whether every name in
+		# --omz-plugins is a real plugin can only be answered against the
+		# extracted tree, and pulling 3 MB is exactly what --dry-run avoids.
+		# The real build checks it, before mmdebstrap starts.
+		[ "$OMZ_ALL_PLUGINS" = 1 ] || \
+			info "DRY RUN:   plugin names NOT checked here (needs the tree): ${OMZ_PLUGINS}"
+	else
+		omz_work="${WORK_DIR}/omz"
+		omz_top=$(omz_extract "$OMZ_COMMIT" "$omz_work")
+
+		# VERIFY BEFORE PRUNE. The pin covers the upstream tree, so hashing after
+		# deleting 300 plugins would make the digest a function of --omz-plugins
+		# and every plugin-list change would look like a supply-chain failure.
+		omz_got=$(omz_tree_digest "$omz_top")
+		if [ "$omz_got" != "$OMZ_TREE_SHA256" ]; then
+			die "Oh My Zsh tree digest MISMATCH
+  commit   ${OMZ_COMMIT}
+  expected ${OMZ_TREE_SHA256}
+  got      ${omz_got}
+This is the digest of the extracted tree, not of the archive, so GitHub
+recompressing the tarball is NOT a possible cause. Either the pin is stale
+(re-run with --omz-repin ${OMZ_COMMIT} and read the upstream diff) or what
+arrived is not the commit it claims to be. Refusing to build."
+		fi
+		info "Oh My Zsh ${OMZ_COMMIT} verified: ${omz_got}"
+
+		# --- prune -------------------------------------------------------------
+		# Removed: the ~300 unused plugins (11 MB), the repo's own CI and editor
+		# config, the documentation, and tools/ EXCEPT check_for_upgrade.sh --
+		# oh-my-zsh.sh sources that one unconditionally, and a missing file there
+		# is an error printed on every login of every device. The rest of tools/
+		# is install.sh / uninstall.sh / upgrade.sh, i.e. scripts whose entire job
+		# is to rewrite $ZSH from the network. They have no business in firmware.
+		if [ "$OMZ_ALL_PLUGINS" = 1 ]; then
+			info "Oh My Zsh: keeping ALL plugins (--omz-all-plugins)"
+		else
+			for p in $OMZ_PLUGINS; do
+				[ -d "${omz_top}/plugins/${p}" ] || die \
+"--omz-plugins names '${p}', which is not a plugin in Oh My Zsh ${OMZ_COMMIT}.
+Left alone this ships an image that prints \"[oh-my-zsh] plugin '${p}' not found\"
+on every login. Check the spelling against plugins/ in the upstream tree."
+			done
+			find "${omz_top}/plugins" -mindepth 1 -maxdepth 1 -type d \
+				| while IFS= read -r d; do
+					case " $OMZ_PLUGINS " in
+					*" ${d##*/} "*) ;;
+					*) rm -rf -- "$d";;
+					esac
+				done
+		fi
+		rm -rf -- "${omz_top}/.github" "${omz_top}/.devcontainer" \
+		          "${omz_top}/templates" "${omz_top}/cache" "${omz_top}/log"
+		find "${omz_top}/tools" -mindepth 1 -maxdepth 1 \
+			! -name check_for_upgrade.sh -exec rm -rf -- {} + 2>/dev/null || true
+		rm -f -- "${omz_top}/.editorconfig" "${omz_top}/.prettierrc" \
+		         "${omz_top}/.gitignore" "${omz_top}/README.md" \
+		         "${omz_top}/CONTRIBUTING.md" "${omz_top}/CODE_OF_CONDUCT.md" \
+		         "${omz_top}/SECURITY.md"
+		# LICENSE.txt stays. It is MIT-licensed code being redistributed in a
+		# firmware image; the licence text is a condition of doing that, not
+		# 1 KB of dead weight.
+		[ -f "${omz_top}/LICENSE.txt" ] || die "Oh My Zsh LICENSE.txt vanished during prune; refusing to ship it unlicensed"
+
+		# Did the prune remove something the surviving code SOURCES? That is the
+		# general form of the tools/check_for_upgrade.sh trap above: oh-my-zsh.sh
+		# sources that file unconditionally, so deleting it would print "no such
+		# file or directory" on every login of every device. This makes the next
+		# pin bump that moves a sourced file fail the BUILD instead.
+		#
+		# Deliberately scoped to `source X` / `. X` and nothing wider. Matching
+		# every "$ZSH/..." string instead also hits the bodies of `omz update`,
+		# `omz changelog` and `omz uninstall`, which name tools/upgrade.sh and
+		# friends -- files this prune removes ON PURPOSE. Those commands are
+		# meant to be broken here: a shell that rewrites the firmware from the
+		# network is not something an appliance should carry.
+		omz_missing=""
+		while IFS= read -r ref; do
+			[ -n "$ref" ] || continue
+			case "$ref" in *'$'*|*'{'*|*'*'*) continue;; esac  # computed at runtime, skip
+			[ -e "${omz_top}/${ref}" ] || omz_missing="${omz_missing} ${ref}"
+		done <<-EOF
+			$(grep -rhoE '(^|[;&|[:space:]])(source|\.)[[:space:]]+"?\$ZSH/[A-Za-z0-9_./-]+' "$omz_top" 2>/dev/null \
+			  | sed -E 's|.*\$ZSH/||' | sort -u)
+		EOF
+		[ -z "$omz_missing" ] || die \
+"the Oh My Zsh prune removed files that the remaining code still sources:${omz_missing}
+Add them to the keep-list in this block, or the image prints an error on every
+login. (This is exactly why tools/check_for_upgrade.sh is kept.)"
+
+		OMZ_TAR="${WORK_DIR}/ohmyzsh.tar"
+		tar -C "$omz_top" --owner=0 --group=0 --numeric-owner --sort=name \
+			-cf "$OMZ_TAR" .
+		info "Oh My Zsh pruned to $(find "$omz_top" -type f | wc -l) files, $(du -sk "$omz_top" | cut -f1) KiB"
+	fi
+fi
+
 DEB_LIST="${WORK_DIR}/kernel-debs.list"
 OVERLAY_TAR=""
 [ -n "$OVERLAY_DIR" ] && OVERLAY_TAR="${WORK_DIR}/overlay.tar"
@@ -1281,9 +1704,18 @@ fi
 [ "$VERBOSE" = 1 ] && MM+=(--verbose)
 [ -n "$QEMU_STATIC" ] && MM+=("--setup-hook=mkdir -p \"\$1/usr/bin\" && cp ${QEMU_STATIC} \"\$1${QEMU_STATIC}\"")
 export OMNI_TS_TGZ="${TS_TGZ}"
+export OMNI_ZSH="${ZSH_SHELL}"
+export OMNI_OMZ_TAR="${OMZ_TAR}"
+if [ "$ZSH_SHELL" = 1 ]; then
+	export OMNI_ZSHRC_SRC="${ZSH_DIR}/zshrc"
+	export OMNI_ZSH_THEME_SRC="${ZSH_DIR}/omni.zsh-theme"
+else
+	export OMNI_ZSHRC_SRC="" OMNI_ZSH_THEME_SRC=""
+fi
 MM+=("--customize-hook=${HOOK_DIR}/10-overlay.sh"
      "--customize-hook=${HOOK_DIR}/20-kernel.sh"
      "--customize-hook=${HOOK_DIR}/25-tailscale.sh"
+     "--customize-hook=${HOOK_DIR}/27-zsh.sh"
      "--customize-hook=${HOOK_DIR}/30-systemd.sh"
      "--customize-hook=${HOOK_DIR}/40-serial.sh"
      "--customize-hook=${HOOK_DIR}/50-boot.sh"
@@ -1365,6 +1797,15 @@ for d in "${INSTALL_DEBS[@]}"; do info "                  $(basename "$d")"; don
 info "overlay         ${OVERLAY_DIR:-<none>}"
 info "units enabled   ${ENABLE_UNITS[*]}"
 info "console         ${CONSOLE} @ ${CONSOLE_BAUD} (autologin root)"
+if [ "$ZSH_SHELL" = 1 ]; then
+	if [ "$OMZ_ALL_PLUGINS" = 1 ]; then
+		info "root shell      zsh + oh-my-zsh ${OMZ_COMMIT} (all plugins)"
+	else
+		info "root shell      zsh + oh-my-zsh ${OMZ_COMMIT} [${OMZ_PLUGINS}]"
+	fi
+else
+	info "root shell      Debian default (--no-zsh)"
+fi
 info "boot names      ${KERNEL_NAME} / ${DTB_NAME} / ${RAMDISK_NAME}"
 info "filesystem      ${BLOCKS} x ${BLOCK_SIZE} = ${IMG_BYTES} bytes ($((IMG_BYTES/1048576)) MiB)"
 info "                label=${LABEL} uuid=${FS_UUID} -O ${OFEAT}"
@@ -1595,6 +2036,10 @@ kernel-package       ${KVER:-unknown}
 kernel-debs          $(printf '%s ' "${INSTALL_DEBS[@]##*/}")
 overlay              ${OVERLAY_DIR:-(none)}
 console              ${CONSOLE}@${CONSOLE_BAUD} autologin=root
+root-shell           $([ "$ZSH_SHELL" = 1 ] && echo zsh || echo "debian-default")
+omz-commit           $([ "$ZSH_SHELL" = 1 ] && echo "${OMZ_COMMIT}" || echo "(none)")
+omz-tree-sha256      $([ "$ZSH_SHELL" = 1 ] && echo "${OMZ_TREE_SHA256}" || echo "(none)")
+omz-plugins          $([ "$ZSH_SHELL" = 1 ] && { [ "$OMZ_ALL_PLUGINS" = 1 ] && echo "(all)" || echo "${OMZ_PLUGINS}"; } || echo "(none)")
 boot-kernel-name     ${KERNEL_NAME}
 boot-dtb-name        ${DTB_NAME}
 boot-ramdisk-name    ${RAMDISK_NAME}
